@@ -32,6 +32,8 @@ a{color:var(--ac)}
 <div class="panel"><ul id="sig"><li class="sub">Sem dados ainda.</li></ul></div>
 <h2>Resumo</h2>
 <div class="panel" id="sum"><p class="sub">Sem dados ainda.</p></div>
+<h2>Operações-sombra (todos os sinais)</h2>
+<div class="panel" id="shadow"><p class="sub">Sem dados ainda.</p></div>
 <h2>Histórico</h2>
 <div class="panel"><ul id="hist"><li class="sub">Ainda sem operações fechadas.</li></ul></div>
 <h2>Teste sem viés de sobrevivência</h2>
@@ -73,7 +75,7 @@ function fmtStats(s,cap){
   return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
 }
 async function main(){
-  const [tr,last,sv]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json")]);
+  const [tr,last,sv,shd]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json")]);
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
     $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}.`;
@@ -95,6 +97,16 @@ async function main(){
     if(n>=2){const sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1));me=`, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}`;}
     $("sum").innerHTML=`<p>${n} ${n===1?"operação fechada":"operações fechadas"}, lucro em ${w} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}${me}. Total: R$ ${br(cap*r.reduce((a,b)=>a+b,0)/100)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,52 (1,0%) por operação.</p>`;
   }else if(tr){$("sum").innerHTML="<p class='sub'>Os números aparecem depois da primeira operação fechada. Para uma leitura confiável são necessárias pelo menos 30 operações.</p>";}
+  const sh=(shd&&shd.trades)||[],shc=sh.filter(t=>t.status==="fechada"),sho=sh.filter(t=>t.status==="aberta");
+  if(sh.length){
+    let txt=`<p>${sho.length} ${sho.length===1?"aberta":"abertas"} e ${shc.length} ${shc.length===1?"fechada":"fechadas"}.</p>`;
+    if(shc.length>=2){
+      const r=shc.map(t=>t.net),n=r.length,m=r.reduce((a,b)=>a+b,0)/n,sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1)),w=r.filter(x=>x>0).length,cap=shc[0].cap;
+      txt+=`<p>Lucro em ${w} de ${n} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações fechadas para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,32 (0,6%) por operação.</p>`;
+    }else if(shc.length===1){txt+=`<p class="sub">Resultado da primeira: ${money(shc[0].net,shc[0].cap)}. Uma operação só não diz nada.</p>`;}
+    txt+=`<p class="sub">Estas operações registram o resultado de cada sinal, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido, e não representam operações reais.</p>`;
+    $("shadow").innerHTML=txt;
+  }
   if(sv){
     const cap=50,g=sv.groups,a=g.A_todas_inclusive_as_que_sairam,b=g.B_so_as_que_negociam_hoje;
     $("surv").innerHTML=`<p class="sub">Gerado em ${when(sv.generated)}. ${sv.symbols.all} pares USDT no arquivo público da Binance, sendo ${sv.symbols.delisted} de moedas que já saíram. Em cada dia, só as 25 de maior volume da época entram no teste.</p>

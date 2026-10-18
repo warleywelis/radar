@@ -44,7 +44,7 @@ svg{width:100%;height:auto;display:block}
 <p id="status" class="mut">Aguardando.</p>
 <div id="out"></div>
 
-<p class="mut">Como funciona: procura no histórico de 40 moedas muito negociadas todos os dias em que houve o mesmo sinal do robô (rompimento da máxima de 20 dias com volume pelo menos 2 vezes a média). Para cada caso, mede como o preço andou nos 7 dias seguintes, em unidades da oscilação diária da própria moeda, e reescala para a oscilação da moeda escolhida. Os casos são separados em alta, estabilidade e baixa conforme o preço terminou os 7 dias. As linhas mostram o caminho médio de cada grupo e a faixa clara mostra onde ficaram 80% de todos os casos. Limitações: só entram moedas que existem hoje, o futuro pode ser diferente do passado, e a faixa não é uma garantia de nada.</p>
+<p class="mut">Como funciona: procura no histórico de 40 moedas muito negociadas todos os dias em que houve o mesmo sinal do robô (rompimento da máxima de 20 dias com volume pelo menos 2 vezes a média). Para cada caso, mede como o preço andou nos 7 dias seguintes, em unidades da oscilação diária da própria moeda, e reescala para a oscilação da moeda escolhida. Os casos são separados em alta, estabilidade e baixa conforme o preço terminou os 7 dias. As linhas mostram o caminho mediano (o caso típico, sem se deixar levar por casos extremos) de cada grupo e a faixa clara mostra onde ficaram 80% de todos os casos. Limitações: só entram moedas que existem hoje, o futuro pode ser diferente do passado, e a faixa não é uma garantia de nada.</p>
 
 <script>
 const HOSTS=["https://data-api.binance.vision","https://api.binance.com"];
@@ -137,7 +137,7 @@ async function run(){
     const N=A.length,band=(p)=>Array.from({length:H+1},(_,k)=>pct(A.map(a=>a.cl[k]),p)*atr);
     const groups={up:[],st:[],dn:[]};
     for(const a of A)(a.cl[H]>=thr?groups.up:a.cl[H]<=-thr?groups.dn:groups.st).push(a);
-    const mk=(key,name,arr)=>({key,name,n:arr.length,share:arr.length/N*100,path:arr.length?Array.from({length:H+1},(_,k)=>mean(arr.map(a=>a.cl[k]))*atr):[],fin:arr.length?mean(arr.map(a=>a.cl[H]))*atr:0});
+    const mk=(key,name,arr)=>({key,name,n:arr.length,share:arr.length/N*100,path:arr.length?Array.from({length:H+1},(_,k)=>pct(arr.map(a=>a.cl[k]),0.5)*atr):[],fin:arr.length?pct(arr.map(a=>a.cl[H]),0.5)*atr:0});
     const cls=[mk("up","Alta",groups.up),mk("st","Estabilidade",groups.st),mk("dn","Baixa",groups.dn)];
     const tN=tgt/atr,sN=stop/atr;let hit=0,hs=0,hn=0;
     for(const a of A){
@@ -151,7 +151,7 @@ async function run(){
     <div class="panel">${chart(o)}
     <p class="sub">Eixo vertical: variação desde hoje (preço atual ${Number(price.toPrecision(5))} USDT). Linhas tracejadas: meta ${money(tgt,cap)} e stop ${money(-stop,cap)}. Faixa escura: 50% dos casos; faixa clara: 80%.</p>
     ${cls.map(c=>`<div class="row"><div class="top"><b class="${c.key}">${c.name}</b><span>${br(c.share,0)}% dos casos</span></div>
-      <div class="sub">${c.n?`Em 7 dias, preço médio de ${usd(c.fin)} USDT, variação de ${money(c.fin,cap)}.`:"Nenhum caso nesse grupo."}</div></div>`).join("")}</div>
+      <div class="sub">${c.n?`Em 7 dias, preço mediano de ${usd(c.fin)} USDT, variação mediana de ${money(c.fin,cap)}.`:"Nenhum caso nesse grupo."}</div></div>`).join("")}</div>
     <div class="panel"><p><b>Se a entrada fosse hoje, com esta meta e este stop:</b></p>
     <div class="row"><div class="top"><span>Chegaria à meta antes do stop</span><b class="up">${br(hit/N*100,0)}%</b></div></div>
     <div class="row"><div class="top"><span>Chegaria ao stop antes da meta</span><b class="dn">${br(hs/N*100,0)}%</b></div></div>

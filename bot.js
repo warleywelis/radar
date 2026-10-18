@@ -65,6 +65,15 @@ async function daily(sym) {
   return k.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
 }
 
+function newTrade(s, now, source) {
+  const entry = s.ask * (1 + C.slip / 100);
+  return {
+    id: now + Math.random(), sym: s.sym, base: s.base, time: now, exp: now + C.days * DAY, entry, cap: C.cap, fee: C.fee, slip: C.slip,
+    vr: s.vr, stopPct: s.stopPct, tgt: C.tgt, stopP: entry * (1 - s.stopPct / 100), tgtP: entry * (1 + C.tgt / 100),
+    status: "aberta", cur: entry, source, sigT: s.sigT
+  };
+}
+
 (async () => {
   fs.mkdirSync("data", { recursive: true });
   let S = { trades: [] };
@@ -74,6 +83,13 @@ async function daily(sym) {
   for (const t of S.trades.filter(t => t.status === "aberta")) {
     await resolve(t);
     if (t.status === "fechada") msgs.push(`Operação simulada fechada: ${t.base}/USDT ${whyTxt[t.why]}, resultado ${money(t.net)}.`);
+  }
+
+  // Operações-sombra: guardam o resultado de TODOS os sinais, separadas da operação principal
+  let SH = { trades: [] };
+  try { SH = JSON.parse(fs.readFileSync("data/shadow.json", "utf8")); } catch (e) {}
+  for (const t of SH.trades.filter(t => t.status === "aberta")) {
+    try { await resolve(t); } catch (e) { console.log("Sombra falhou em " + t.sym + ": " + e.message); }
   }
 
   const ticker = await get("/api/v3/ticker/24hr");
@@ -88,30 +104,32 @@ async function daily(sym) {
     const batch = await Promise.all(cands.slice(i, i + 10).map(x => daily(x.symbol).catch(() => null)));
     batch.forEach((cs, j) => {
       const x = cands[i + j], e = cs ? evalSignal(cs) : null;
-      if (e && e.sig) signals.push({ sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice, vr: e.vr, atr: e.atr, stopPct: Math.min(Math.max(C.k * e.atr, 4), C.maxl) });
+      if (e && e.sig) signals.push({ sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice, vr: e.vr, atr: e.atr, sigT: e.t, stopPct: Math.min(Math.max(C.k * e.atr, 4), C.maxl) });
     });
   }
   signals.sort((a, b) => b.vr - a.vr);
 
   let entered = null;
-  if (!S.trades.some(t => t.status === "aberta") && signals.length) {
-    const s = signals[0], now = Date.now(), entry = s.ask * (1 + C.slip / 100);
-    S.trades.push({
-      id: now, sym: s.sym, base: s.base, time: now, exp: now + C.days * DAY, entry, cap: C.cap, fee: C.fee, slip: C.slip,
-      vr: s.vr, stopPct: s.stopPct, tgt: C.tgt, stopP: entry * (1 - s.stopPct / 100), tgtP: entry * (1 + C.tgt / 100),
-      status: "aberta", cur: entry, source: "nuvem"
-    });
-    entered = s.sym;
-    msgs.push(`Nova operação simulada: ${s.base}/USDT, volume ${s.vr.toFixed(1)}x a média. Stop em ${money(-s.stopPct)}, meta em ${money(C.tgt)}.`);
+  const now0 = Date.now();
+  for (const sg of signals) {
+    if (!SH.trades.some(t => t.sym === sg.sym && t.sigT === sg.sigT)) SH.trades.push(newTrade(sg, now0, "sombra"));
+  }
+  const fresh = signals.filter(x => !S.trades.some(t => t.sym === x.sym && t.sigT === x.sigT));
+  if (!S.trades.some(t => t.status === "aberta") && fresh.length) {
+    const sg = fresh[0];
+    S.trades.push(newTrade(sg, Date.now(), "nuvem"));
+    entered = sg.sym;
+    msgs.push(`Nova operação simulada: ${sg.base}/USDT, volume ${sg.vr.toFixed(1)}x a média. Stop em ${money(-sg.stopPct)}, meta em ${money(C.tgt)}.`);
   } else if (signals.length) {
-    msgs.push(`Sinais hoje: ${signals.map(s => s.base).join(", ")}. Já há uma operação aberta.`);
+    msgs.push(`Sinais hoje: ${signals.map(x => x.base).join(", ")}. Já há uma operação aberta.`);
   }
 
   fs.writeFileSync("data/trades.json", JSON.stringify(S));
+  fs.writeFileSync("data/shadow.json", JSON.stringify(SH));
   fs.writeFileSync("data/last-run.json", JSON.stringify({
     time: Date.now(), analyzed: cands.length,
     signals: signals.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask })),
-    entered, params: C
+    entered, shadowOpen: SH.trades.filter(t => t.status === "aberta").length, shadowClosed: SH.trades.filter(t => t.status === "fechada").length, params: C
   }));
   console.log(`Analisadas ${cands.length} moedas, ${signals.length} com sinal. Entrada: ${entered || "nenhuma"}.`);
   await tg(msgs.join("\n"));
