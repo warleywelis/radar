@@ -24,6 +24,7 @@ ul{list-style:none;margin:0;padding:0}
 li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
 .up{color:var(--up)}.dn{color:var(--dn)}
+.tv{margin-top:8px}
 </style>
 </head>
 <body>
@@ -145,7 +146,7 @@ function render(){
   $("open").innerHTML=op.length?op.map(t=>{
     const fl=(t.cur/t.entry-1)*100-2*t.fee,d=Math.max(0,(t.exp-Date.now())/DAY);
     return `<li><div class="top"><b>${t.base}/USDT</b><span class="${fl>=0?"up":"dn"}">${money(fl,t.cap)}</span></div>
-    <div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.</div></li>`;
+    <div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.</div><button class="sm chart" data-sym="${t.sym}">Ver gráfico</button><div class="tv"></div></li>`;
   }).join(""):"<li class='sub'>Nenhuma.</li>";
   $("hist").innerHTML=cl.length?cl.slice().reverse().map(t=>`<li><div class="top"><b>${t.base}/USDT</b><span class="${t.net>=0?"up":"dn"}">${money(t.net,t.cap)}</span></div>
     <div class="sub">Entrada ${when(t.time)}, ${whyTxt[t.why]}. Volume do sinal: ${br(t.vr,1)} vezes a média.</div></li>`).join(""):"<li class='sub'>Ainda sem operações fechadas.</li>";
@@ -183,7 +184,7 @@ async function refresh(){
     $("list").innerHTML=rows.length?rows.map(r=>`<li><div class="top"><b>${r.base}/USDT</b><span class="up">sinal ativo</span></div>
       <div class="sub">Rompeu a máxima de 20 dias no candle de ${new Date(r.sigT).toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",timeZone:"UTC"})}, com volume ${br(r.vr,1)} vezes a média. Preço de compra agora ${Number(r.ask.toPrecision(5))} USDT.</div>
       <div class="sub">Oscilação diária ${br(r.atr,1)}%. Stop ${p.mode==="own"?"seu":"sugerido"}: perda de ${money(r.stopPct,p.cap)}. Meta: ganho de ${money(p.tgt,p.cap)}. Custo estimado ${money(r.cost,p.cap)}.</div>
-      <button class="sm" onclick="enter('${r.sym}')">Simular entrada</button></li>`).join("")
+      <button class="sm" onclick="enter('${r.sym}')">Simular entrada</button> <button class="sm chart" data-sym="${r.sym}">Ver gráfico</button><div class="tv"></div></li>`).join("")
       :"<li class='sub'>Nenhuma moeda com sinal hoje. Isso é normal: o sinal aparece em poucos dias.</li>";
     $("ctx").textContent=`${cands.length} moedas analisadas, ${rows.length} com sinal.`;
     st.textContent="Conectado via "+host.replace("https://","")+" às "+new Date().toLocaleTimeString("pt-BR");
@@ -192,6 +193,17 @@ async function refresh(){
   }
   btn.disabled=false;
 }
+function showChart(box,sym){
+  if(box.dataset.on){box.innerHTML="";box.dataset.on="";return;}
+  box.dataset.on="1";
+  const wrap=document.createElement("div");wrap.className="tradingview-widget-container";wrap.style.height="380px";
+  const inner=document.createElement("div");inner.className="tradingview-widget-container__widget";inner.style.height="100%";
+  wrap.appendChild(inner);
+  const sc=document.createElement("script");sc.src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";sc.async=true;
+  sc.text=JSON.stringify({autosize:true,symbol:"BINANCE:"+sym,interval:"D",timezone:"America/Sao_Paulo",theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light",style:"1",locale:"br",allow_symbol_change:false,hide_side_toolbar:true,calendar:false,support_host:"https://www.tradingview.com"});
+  wrap.appendChild(sc);box.appendChild(wrap);
+}
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.chart");if(b)showChart(b.nextElementSibling,b.dataset.sym);});
 $("go").addEventListener("click",refresh);
 $("cp").addEventListener("click",async()=>{const b=$("bk");try{await navigator.clipboard.writeText(b.value);}catch(e){b.select();document.execCommand("copy");}});
 $("rs").addEventListener("click",()=>{

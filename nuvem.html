@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar Binance - robô na nuvem</title>
+<style>
+:root{--bg:#eef2f4;--panel:#fff;--ink:#14232e;--mut:#5b6b77;--line:#d3dde3;--up:#1e7a5a;--dn:#b3382c;--ac:#0f6e8c}
+@media(prefers-color-scheme:dark){:root{--bg:#10191f;--panel:#17242c;--ink:#e6eef2;--mut:#93a5b0;--line:#2a3b46;--up:#4cc99a;--dn:#ff8a7a;--ac:#5cc0e0}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:16px;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:1.35rem;margin:4px 0 2px}h2{font-size:1.05rem;margin:18px 0 6px}
+p{margin:0 0 10px}.mut,.sub{color:var(--mut);font-size:.88rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+button{font:inherit;padding:6px 12px;margin:8px 0 0;border-radius:8px;border:1px solid var(--ac);background:var(--ac);color:#fff;font-weight:600}
+ul{list-style:none;margin:0;padding:0}
+li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
+.top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
+.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}
+a{color:var(--ac)}
+</style>
+</head>
+<body>
+<p style="margin:0 0 6px"><a href="index.html">← Menu das ferramentas</a></p>
+<h1>Radar Binance, robô na nuvem</h1>
+<p class="mut">Operações de mentira registradas sozinhas, todo dia, pelo GitHub. A regra é a do simulador de momentum: rompimento da máxima de 20 dias com volume forte, meta de 10% e prazo de 7 dias, uma operação por vez.</p>
+
+<p id="status" class="mut">Carregando...</p>
+<h2>Operação aberta</h2>
+<div class="panel"><ul id="open"><li class="sub">Nenhuma.</li></ul></div>
+<h2>Sinais da última execução</h2>
+<div class="panel"><ul id="sig"><li class="sub">Sem dados ainda.</li></ul></div>
+<h2>Resumo</h2>
+<div class="panel" id="sum"><p class="sub">Sem dados ainda.</p></div>
+<h2>Histórico</h2>
+<div class="panel"><ul id="hist"><li class="sub">Ainda sem operações fechadas.</li></ul></div>
+<h2>Teste sem viés de sobrevivência</h2>
+<div class="panel" id="surv"><p class="sub">Ainda não foi rodado. Ele é executado manualmente na aba Actions do GitHub.</p></div>
+
+<script>
+const RAW="https://raw.githubusercontent.com/warleywelis/radar/main/data/";
+const DAY=864e5;
+const $=id=>document.getElementById(id);
+const br=(v,d=2)=>v.toFixed(d).replace(".",",");
+const money=(pct,cap)=>`R$ ${br(cap*pct/100)} (${br(pct,1)}%)`;
+const when=x=>new Date(x).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+const whyTxt={stop:"saiu no stop",meta:"saiu na meta",tempo:"saiu pelo prazo"};
+async function raw(name){
+  try{const r=await fetch(RAW+name+"?t="+Date.now());if(!r.ok)return null;return await r.json();}catch(e){return null;}
+}
+async function price(sym){
+  for(const h of ["https://data-api.binance.vision","https://api.binance.com"]){
+    try{const r=await fetch(`${h}/api/v3/ticker/price?symbol=${sym}`);if(r.ok)return +(await r.json()).price;}catch(e){}
+  }
+  return null;
+}
+function showChart(box,sym){
+  if(box.dataset.on){box.innerHTML="";box.dataset.on="";return;}
+  box.dataset.on="1";
+  const wrap=document.createElement("div");wrap.className="tradingview-widget-container";wrap.style.height="380px";
+  const inner=document.createElement("div");inner.className="tradingview-widget-container__widget";inner.style.height="100%";
+  wrap.appendChild(inner);
+  const sc=document.createElement("script");sc.src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";sc.async=true;
+  sc.text=JSON.stringify({autosize:true,symbol:"BINANCE:"+sym,interval:"D",timezone:"America/Sao_Paulo",theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light",style:"1",locale:"br",allow_symbol_change:false,hide_side_toolbar:true,calendar:false,support_host:"https://www.tradingview.com"});
+  wrap.appendChild(sc);box.appendChild(wrap);
+}
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.chart");if(b)showChart(b.nextElementSibling,b.dataset.sym);});
+const chartBtn=sym=>`<button class="chart" data-sym="${sym}">Ver gráfico</button><div class="tv"></div>`;
+
+function fmtStats(s,cap){
+  if(!s||s.n<2)return "operações insuficientes";
+  const f=v=>v===null||v===undefined?"sem dados":money(v,cap);
+  return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
+}
+async function main(){
+  const [tr,last,sv]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json")]);
+  if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
+  else{
+    $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}.`;
+    $("sig").innerHTML=last.signals.length?last.signals.map(s=>`<li><div class="top"><b>${s.base}/USDT</b><span class="up">sinal</span></div><div class="sub">Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.</div>${chartBtn(s.sym)}</li>`).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
+  }
+  const trades=(tr&&tr.trades)||[],op=trades.filter(t=>t.status==="aberta"),cl=trades.filter(t=>t.status==="fechada");
+  if(op.length){
+    const rows=[];
+    for(const t of op){
+      const p=await price(t.sym),cur=p||t.cur,fl=(cur/t.entry-1)*100-2*t.fee,d=Math.max(0,(t.exp-Date.now())/DAY);
+      rows.push(`<li><div class="top"><b>${t.base}/USDT</b><span class="${fl>=0?"up":"dn"}">${money(fl,t.cap)}</span></div><div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.</div>${chartBtn(t.sym)}</li>`);
+    }
+    $("open").innerHTML=rows.join("");
+  }
+  if(cl.length){
+    $("hist").innerHTML=cl.slice().reverse().map(t=>`<li><div class="top"><b>${t.base}/USDT</b><span class="${t.net>=0?"up":"dn"}">${money(t.net,t.cap)}</span></div><div class="sub">Entrada ${when(t.time)}, ${whyTxt[t.why]}. Volume do sinal: ${br(t.vr,1)} vezes a média.</div></li>`).join("");
+    const n=cl.length,r=cl.map(t=>t.net),m=r.reduce((a,b)=>a+b,0)/n,cap=cl[0].cap,w=r.filter(x=>x>0).length;
+    let me="";
+    if(n>=2){const sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1));me=`, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}`;}
+    $("sum").innerHTML=`<p>${n} ${n===1?"operação fechada":"operações fechadas"}, lucro em ${w} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}${me}. Total: R$ ${br(cap*r.reduce((a,b)=>a+b,0)/100)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,52 (1,0%) por operação.</p>`;
+  }else if(tr){$("sum").innerHTML="<p class='sub'>Os números aparecem depois da primeira operação fechada. Para uma leitura confiável são necessárias pelo menos 30 operações.</p>";}
+  if(sv){
+    const cap=50,g=sv.groups,a=g.A_todas_inclusive_as_que_sairam,b=g.B_so_as_que_negociam_hoje;
+    $("surv").innerHTML=`<p class="sub">Gerado em ${when(sv.generated)}. ${sv.symbols.all} pares USDT no arquivo público da Binance, sendo ${sv.symbols.delisted} de moedas que já saíram. Em cada dia, só as 25 de maior volume da época entram no teste.</p>
+    <p><b>Com as moedas que saíram:</b><br>Controle: ${fmtStats(a.controle,cap)}<br>Momentum: ${fmtStats(a.momentum,cap)}</p>
+    <p><b>Só as que negociam hoje (como nos testes anteriores):</b><br>Controle: ${fmtStats(b.controle,cap)}<br>Momentum: ${fmtStats(b.momentum,cap)}</p>
+    <p class="sub">Se o momentum com as moedas que saíram for bem pior que sem elas, a vantagem anterior era em boa parte viés de sobrevivência.</p>`;
+  }
+}
+main();
+</script>
+</body>
+</html>
