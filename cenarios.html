@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar Binance - cenários</title>
+<style>
+:root{--bg:#eef2f4;--panel:#fff;--ink:#14232e;--mut:#5b6b77;--line:#d3dde3;--up:#1e7a5a;--dn:#b3382c;--st:#5b6b77;--ac:#0f6e8c;--band:rgba(15,110,140,.12);--band2:rgba(15,110,140,.22)}
+@media(prefers-color-scheme:dark){:root{--bg:#10191f;--panel:#17242c;--ink:#e6eef2;--mut:#93a5b0;--line:#2a3b46;--up:#4cc99a;--dn:#ff8a7a;--st:#aab8c2;--ac:#5cc0e0;--band:rgba(92,192,224,.12);--band2:rgba(92,192,224,.22)}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:16px;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:1.35rem;margin:4px 0 2px}h2{font-size:1.05rem;margin:18px 0 6px}
+p{margin:0 0 10px}.mut,.sub{color:var(--mut);font-size:.88rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+.ctl{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}
+label{display:block;font-size:.85rem;color:var(--mut);margin-bottom:3px}
+input,button{width:100%;font:inherit;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600;margin-top:10px}
+button:disabled{opacity:.6}
+#status.err{color:var(--dn)}
+a{color:var(--ac)}
+.row{padding:9px 0;border-top:1px solid var(--line)}.row:first-child{border-top:0}
+.top{display:flex;justify-content:space-between;gap:8px}
+.up{color:var(--up)}.dn{color:var(--dn)}.st{color:var(--st)}
+svg{width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+<p style="margin:0 0 6px"><a href="index.html">← Menu das ferramentas</a></p>
+<h1>Radar Binance, cenários dos próximos 7 dias</h1>
+<p class="mut">Desenha três caminhos hipotéticos do preço (alta, estabilidade e baixa) a partir do que aconteceu depois do mesmo sinal em outras moedas. É um mapa de probabilidades, não uma previsão do futuro.</p>
+
+<div class="panel">
+  <div class="ctl">
+    <div class="full"><label for="sym">Moeda (par com USDT)</label><input id="sym" list="sigs" value="AVAUSDT" autocapitalize="characters"><datalist id="sigs"></datalist></div>
+    <div><label for="tgt">Meta de ganho (%)</label><input id="tgt" type="number" inputmode="decimal" value="10"></div>
+    <div><label for="stop">Stop (%), vazio = sugerido</label><input id="stop" type="number" inputmode="decimal" placeholder="sugerido"></div>
+    <div><label for="cap">Capital (R$)</label><input id="cap" type="number" inputmode="decimal" value="50"></div>
+    <div><label for="thr">Limite alta/baixa (x oscilação diária)</label><input id="thr" type="number" inputmode="decimal" value="1" step="0.5"></div>
+  </div>
+  <button id="go">Gerar cenários</button>
+</div>
+
+<p id="status" class="mut">Aguardando.</p>
+<div id="out"></div>
+
+<p class="mut">Como funciona: procura no histórico de 40 moedas muito negociadas todos os dias em que houve o mesmo sinal do robô (rompimento da máxima de 20 dias com volume pelo menos 2 vezes a média). Para cada caso, mede como o preço andou nos 7 dias seguintes, em unidades da oscilação diária da própria moeda, e reescala para a oscilação da moeda escolhida. Os casos são separados em alta, estabilidade e baixa conforme o preço terminou os 7 dias. As linhas mostram o caminho médio de cada grupo e a faixa clara mostra onde ficaram 80% de todos os casos. Limitações: só entram moedas que existem hoje, o futuro pode ser diferente do passado, e a faixa não é uma garantia de nada.</p>
+
+<script>
+const HOSTS=["https://data-api.binance.vision","https://api.binance.com"];
+const SKIP=new Set(["USDC","FDUSD","TUSD","BUSD","USDP","DAI","EUR","TRY","BRL","AEUR","USD1","XUSD","PAXG","USDS"]);
+const H=7,L=20;
+let host=null;
+const $=id=>document.getElementById(id);
+const br=(v,d=2)=>v.toFixed(d).replace(".",",");
+const sg=v=>(v>=0?"+":"")+br(v,1);
+const nv=(id,d)=>{const v=parseFloat($(id).value);return isNaN(v)?d:v;};
+const money=(pct,cap)=>`R$ ${br(cap*pct/100)} (${br(pct,1)}%)`;
+async function get(path){
+  let last;
+  for(const h of(host?[host]:HOSTS)){
+    try{const r=await fetch(h+path);if(!r.ok)throw new Error("HTTP "+r.status);host=h;return await r.json();}
+    catch(e){last=e;}
+  }
+  host=null;throw last;
+}
+async function daily(sym){
+  const k=await get(`/api/v3/klines?symbol=${sym}&interval=1d&limit=1000`);
+  return k.map(c=>({t:+c[0],o:+c[1],h:+c[2],l:+c[3],c:+c[4],v:+c[5]}));
+}
+function atrAt(cs,i,n=14){
+  if(i<n)return null;
+  let s=0;
+  for(let j=i-n+1;j<=i;j++){const p=cs[j-1].c;s+=Math.max(cs[j].h-cs[j].l,Math.abs(cs[j].h-p),Math.abs(cs[j].l-p));}
+  return s/n/cs[i].c*100;
+}
+function findAnalogs(cs){
+  const out=[];let i=25;
+  while(i<cs.length-H-2){
+    let mh=0,sv=0;
+    for(let j=i-L;j<i;j++){if(cs[j].h>mh)mh=cs[j].h;sv+=cs[j].v;}
+    const vr=sv>0?cs[i].v/(sv/L):0,a=atrAt(cs,i);
+    if(a&&cs[i].c>mh&&vr>=2){
+      const e=cs[i+1].o,cl=[0],hi=[0],lo=[0];
+      for(let k=1;k<=H;k++){
+        const x=cs[i+k];
+        cl.push((x.c/e-1)*100/a);hi.push((x.h/e-1)*100/a);lo.push((x.l/e-1)*100/a);
+      }
+      out.push({cl,hi,lo});
+      i+=H;
+    }else i++;
+  }
+  return out;
+}
+const mean=a=>a.reduce((s,x)=>s+x,0)/a.length;
+function pct(arr,p){const s=arr.slice().sort((a,b)=>a-b);const i=(s.length-1)*p,f=Math.floor(i),c=Math.ceil(i);return s[f]+(s[c]-s[f])*(i-f);}
+
+function chart(o){
+  const W=360,Hh=270,m={l:46,r:12,t:12,b:30},iw=W-m.l-m.r,ih=Hh-m.t-m.b;
+  const ymax=Math.max(o.p90[H],o.tgt*1.15,...o.p90)*1.05,ymin=Math.min(o.p10[H],-o.stop*1.15,...o.p10)*1.05;
+  const X=k=>m.l+iw*k/H,Y=v=>m.t+ih*(1-(v-ymin)/(ymax-ymin));
+  const line=(arr)=>arr.map((v,k)=>`${k?"L":"M"}${X(k).toFixed(1)},${Y(v).toFixed(1)}`).join("");
+  const poly=(hi,lo)=>hi.map((v,k)=>`${k?"L":"M"}${X(k).toFixed(1)},${Y(v).toFixed(1)}`).join("")+lo.map((v,k)=>`L${X(H-k).toFixed(1)},${Y(lo[H-k]).toFixed(1)}`).join("")+"Z";
+  let s=`<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="Cenários dos próximos 7 dias">`;
+  const ticks=[ymin,0,ymax];
+  for(const t of [0,o.tgt,-o.stop]){s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}" stroke="${t===0?"var(--line)":t>0?"var(--up)":"var(--dn)"}" stroke-width="1" ${t===0?"":'stroke-dasharray="4 3"'}/>`;
+    s+=`<text x="${m.l-4}" y="${(Y(t)+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--mut)">${sg(t)}%</text>`;}
+  s+=`<path d="${poly(o.p90,o.p10)}" fill="var(--band)"/><path d="${poly(o.p75,o.p25)}" fill="var(--band2)"/>`;
+  for(const c of o.cls){if(c.n)s+=`<path d="${line(c.path)}" fill="none" stroke="var(--${c.key})" stroke-width="2.6" stroke-linejoin="round"/>`;}
+  for(let k=0;k<=H;k++)s+=`<text x="${X(k).toFixed(1)}" y="${Hh-10}" text-anchor="middle" font-size="9" fill="var(--mut)">${k===0?"hoje":"dia "+k}</text>`;
+  s+=`</svg>`;
+  return s;
+}
+
+async function run(){
+  const st=$("status"),btn=$("go"),sym=$("sym").value.trim().toUpperCase();
+  btn.disabled=true;st.className="mut";$("out").innerHTML="";
+  try{
+    const cap=nv("cap",50),tgt=nv("tgt",10),thr=nv("thr",1);
+    st.textContent="Buscando a moeda "+sym+"...";
+    const mine=await daily(sym);
+    if(mine.length<40)throw new Error("histórico insuficiente para "+sym);
+    const ci=mine.length-2,atr=atrAt(mine,ci),price=mine[mine.length-1].c;
+    const stop=nv("stop",NaN)>0?nv("stop",NaN):Math.min(Math.max(2*atr,4),15);
+    st.textContent="Escolhendo as moedas do histórico...";
+    const tk=await get("/api/v3/ticker/24hr");
+    const syms=tk.filter(x=>{if(!x.symbol.endsWith("USDT"))return false;const b=x.symbol.slice(0,-4);return !SKIP.has(b)&&!/(UP|DOWN|BULL|BEAR)$/.test(b)&&+x.quoteVolume>=5e6;})
+      .sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,40).map(x=>x.symbol);
+    if(!syms.includes(sym))syms.push(sym);
+    let A=[];
+    for(let i=0;i<syms.length;i+=8){
+      st.textContent=`Procurando casos parecidos (${Math.min(i+8,syms.length)} de ${syms.length} moedas)...`;
+      const b=await Promise.all(syms.slice(i,i+8).map(s=>daily(s).catch(()=>null)));
+      for(const cs of b)if(cs&&cs.length>60)A.push(...findAnalogs(cs));
+    }
+    if(A.length<15)throw new Error("poucos casos parecidos no histórico ("+A.length+")");
+    const N=A.length,band=(p)=>Array.from({length:H+1},(_,k)=>pct(A.map(a=>a.cl[k]),p)*atr);
+    const groups={up:[],st:[],dn:[]};
+    for(const a of A)(a.cl[H]>=thr?groups.up:a.cl[H]<=-thr?groups.dn:groups.st).push(a);
+    const mk=(key,name,arr)=>({key,name,n:arr.length,share:arr.length/N*100,path:arr.length?Array.from({length:H+1},(_,k)=>mean(arr.map(a=>a.cl[k]))*atr):[],fin:arr.length?mean(arr.map(a=>a.cl[H]))*atr:0});
+    const cls=[mk("up","Alta",groups.up),mk("st","Estabilidade",groups.st),mk("dn","Baixa",groups.dn)];
+    const tN=tgt/atr,sN=stop/atr;let hit=0,hs=0,hn=0;
+    for(const a of A){
+      let r="n";
+      for(let k=1;k<=H;k++){if(a.lo[k]<=-sN){r="s";break;}if(a.hi[k]>=tN){r="t";break;}}
+      if(r==="t")hit++;else if(r==="s")hs++;else hn++;
+    }
+    const o={p10:band(0.1),p25:band(0.25),p75:band(0.75),p90:band(0.9),cls,tgt,stop};
+    const usd=v=>Number((price*(1+v/100)).toPrecision(4));
+    $("out").innerHTML=`<h2>${sym.replace("USDT","/USDT")}: caminhos possíveis em 7 dias</h2>
+    <div class="panel">${chart(o)}
+    <p class="sub">Eixo vertical: variação desde hoje (preço atual ${Number(price.toPrecision(5))} USDT). Linhas tracejadas: meta ${money(tgt,cap)} e stop ${money(-stop,cap)}. Faixa escura: 50% dos casos; faixa clara: 80%.</p>
+    ${cls.map(c=>`<div class="row"><div class="top"><b class="${c.key}">${c.name}</b><span>${br(c.share,0)}% dos casos</span></div>
+      <div class="sub">${c.n?`Em 7 dias, preço médio de ${usd(c.fin)} USDT, variação de ${money(c.fin,cap)}.`:"Nenhum caso nesse grupo."}</div></div>`).join("")}</div>
+    <div class="panel"><p><b>Se a entrada fosse hoje, com esta meta e este stop:</b></p>
+    <div class="row"><div class="top"><span>Chegaria à meta antes do stop</span><b class="up">${br(hit/N*100,0)}%</b></div></div>
+    <div class="row"><div class="top"><span>Chegaria ao stop antes da meta</span><b class="dn">${br(hs/N*100,0)}%</b></div></div>
+    <div class="row"><div class="top"><span>Nenhum dos dois em 7 dias</span><b class="st">${br(hn/N*100,0)}%</b></div></div>
+    <p class="sub">Base: ${N} casos de sinal parecido em ${syms.length} moedas. A oscilação diária de ${sym.replace("USDT","")} hoje é ${br(atr,1)}%, e alta ou baixa significam terminar a semana acima de +${br(thr*atr,1)}% ou abaixo de -${br(thr*atr,1)}%. O stop ${nv("stop",NaN)>0?"é o que você digitou":"é o sugerido pela oscilação"}.</p></div>`;
+    st.textContent="Pronto às "+new Date().toLocaleTimeString("pt-BR")+".";
+  }catch(e){
+    st.className="err";st.textContent="Não consegui gerar: "+e.message+". Se persistir, me envie esta mensagem.";
+  }
+  btn.disabled=false;
+}
+$("go").addEventListener("click",run);
+(async()=>{
+  try{
+    const r=await fetch("https://raw.githubusercontent.com/warleywelis/radar/main/data/last-run.json?t="+Date.now());
+    if(r.ok){const j=await r.json();$("sigs").innerHTML=j.signals.map(s=>`<option value="${s.sym}">`).join("");if(j.signals.length)$("sym").value=j.signals[0].sym;}
+  }catch(e){}
+})();
+</script>
+</body>
+</html>
