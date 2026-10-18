@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar Binance - simulador de momentum</title>
+<style>
+:root{--bg:#eef2f4;--panel:#fff;--ink:#14232e;--mut:#5b6b77;--line:#d3dde3;--up:#1e7a5a;--dn:#b3382c;--ac:#0f6e8c}
+@media(prefers-color-scheme:dark){:root{--bg:#10191f;--panel:#17242c;--ink:#e6eef2;--mut:#93a5b0;--line:#2a3b46;--up:#4cc99a;--dn:#ff8a7a;--ac:#5cc0e0}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:16px;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:1.35rem;margin:4px 0 2px}h2{font-size:1.05rem;margin:18px 0 6px}
+p{margin:0 0 10px}.mut,.sub{color:var(--mut);font-size:.88rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+.ctl{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}
+label{display:block;font-size:.85rem;color:var(--mut);margin-bottom:3px}
+input,select,button,textarea{width:100%;font:inherit;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600;margin-top:10px}
+button.sm{width:auto;padding:6px 12px;margin:8px 0 0}
+button:disabled{opacity:.6}
+summary{cursor:pointer;margin:10px 0 8px;color:var(--ac)}
+#status.err{color:var(--dn)}
+ul{list-style:none;margin:0;padding:0}
+li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
+.top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
+.up{color:var(--up)}.dn{color:var(--dn)}
+</style>
+</head>
+<body>
+<h1>Radar Binance, simulador de momentum</h1>
+<p class="mut">Operações de mentira, com preços reais, usando o sinal que se destacou no teste: rompimento da máxima de 20 dias com volume forte, em candles diários. Ao abrir a página, ela confere o que aconteceu desde cada entrada.</p>
+
+<div class="panel">
+  <div class="ctl">
+    <div><label for="cap">Capital por operação (R$)</label><input id="cap" type="number" inputmode="decimal" value="50"></div>
+    <div><label for="tgt">Meta de ganho (%)</label><select id="tgt"><option>5</option><option selected>10</option><option>20</option></select></div>
+    <div class="full"><label for="mode">Stop loss</label><select id="mode"><option value="sug">Aceitar o stop sugerido pelo risco</option><option value="own">Usar o meu próprio stop</option></select></div>
+    <div class="full"><label for="own">Meu stop (%), usado só se escolher "meu próprio stop"</label><input id="own" type="number" inputmode="decimal" value="8"></div>
+  </div>
+  <details><summary>Ajustes avançados</summary>
+    <div class="ctl">
+      <div><label for="days">Prazo máximo (dias)</label><input id="days" type="number" inputmode="decimal" value="7"></div>
+      <div><label for="vm">Volume forte: quantas vezes a média</label><input id="vm" type="number" inputmode="decimal" value="2" step="0.5"></div>
+      <div><label for="k">Folga do stop (x oscilação diária)</label><input id="k" type="number" inputmode="decimal" value="2" step="0.5"></div>
+      <div><label for="maxl">Perda máxima aceita (%)</label><input id="maxl" type="number" inputmode="decimal" value="15"></div>
+      <div><label for="vol">Volume mínimo 24h (milhões USDT)</label><input id="vol" type="number" inputmode="decimal" value="5"></div>
+      <div><label for="fee">Taxa por ordem (%)</label><input id="fee" type="number" inputmode="decimal" value="0.075" step="0.005"></div>
+      <div class="full"><label for="slip">Slippage por ordem (%)</label><input id="slip" type="number" inputmode="decimal" value="0.1" step="0.05"></div>
+    </div>
+  </details>
+  <button id="go">Atualizar</button>
+</div>
+
+<p id="status" class="mut">Aguardando.</p>
+<div id="ctx" class="mut"></div>
+
+<h2>Operação aberta</h2>
+<div class="panel"><ul id="open"><li class="sub">Nenhuma.</li></ul></div>
+<h2>Moedas com sinal agora</h2>
+<div class="panel"><ul id="list"></ul></div>
+<h2>Resumo da simulação</h2>
+<div class="panel" id="sum"></div>
+<h2>Histórico</h2>
+<div class="panel"><ul id="hist"><li class="sub">Ainda sem operações fechadas.</li></ul></div>
+
+<details class="panel"><summary>Backup dos dados</summary>
+  <p class="sub">Os dados ficam salvos neste aparelho. Copie o backup de vez em quando e, para eu analisar, cole-o na conversa.</p>
+  <textarea id="bk" rows="4"></textarea>
+  <button class="sm" id="cp">Copiar backup</button> <button class="sm" id="rs">Restaurar do texto acima</button>
+</details>
+
+<p class="mut">Regras: o sinal vale quando o último candle diário fechado (fechamento às 21h no horário de Brasília) rompeu a máxima dos 20 candles anteriores com volume forte. Nem todo dia tem sinal, e dias sem sinal são normais. No máximo uma operação aberta por vez. A entrada usa o preço de compra do momento mais o slippage. Stop e meta são conferidos a cada hora; se os dois forem tocados na mesma hora, conta o stop. O teste histórico indicou algo como R$ 0,52 (1,0%) por operação na meta de 10%, mas com margem de erro grande, e é isso que esta simulação vai confirmar ou não.</p>
+
+<script>
+const HOSTS=["https://api.binance.com","https://data-api.binance.vision"];
+const SKIP=new Set(["USDC","FDUSD","TUSD","BUSD","USDP","DAI","EUR","TRY","BRL","AEUR","USD1","XUSD","PAXG"]);
+const KEY="radar_sim_mom_v1",DAY=864e5;
+let host=null,S={trades:[]},rowsBy={};
+const $=id=>document.getElementById(id);
+const br=(v,d=2)=>v.toFixed(d).replace(".",",");
+const money=(pct,cap)=>`R$ ${br(cap*pct/100)} (${br(pct,1)}%)`;
+const nv=(id,d)=>{const v=parseFloat($(id).value);return isNaN(v)?d:v;};
+const P=()=>({cap:nv("cap",50),tgt:nv("tgt",10),days:Math.max(1,Math.round(nv("days",7))),minVol:nv("vol",5)*1e6,mode:$("mode").value,own:nv("own",8),k:nv("k",2),maxLoss:nv("maxl",15),fee:nv("fee",0.075),slip:nv("slip",0.1),vm:nv("vm",2)});
+const when=x=>new Date(x).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+
+function load(){try{const v=localStorage.getItem(KEY);if(v)S=JSON.parse(v);}catch(e){}}
+function save(){
+  $("bk").value=JSON.stringify(S);
+  try{localStorage.setItem(KEY,JSON.stringify(S));}
+  catch(e){$("ctx").textContent="Atenção: não consegui salvar neste modo de abertura. Use o backup para não perder as operações.";}
+}
+async function get(path){
+  let last;
+  for(const h of(host?[host]:HOSTS)){
+    try{const r=await fetch(h+path);if(!r.ok)throw new Error("HTTP "+r.status);host=h;return await r.json();}
+    catch(e){last=e;}
+  }
+  host=null;throw last;
+}
+async function klines1d(sym){
+  const k=await get(`/api/v3/klines?symbol=${sym}&interval=1d&limit=60`);
+  return k.map(c=>({t:+c[0],o:+c[1],h:+c[2],l:+c[3],c:+c[4],v:+c[5]}));
+}
+function evalSignal(cs,p){
+  const i=cs.length-2;
+  if(i<35)return null;
+  let mh=0,sv=0;
+  for(let j=i-20;j<i;j++){if(cs[j].h>mh)mh=cs[j].h;sv+=cs[j].v;}
+  let s=0;
+  for(let j=i-13;j<=i;j++){const pc=cs[j-1].c;s+=Math.max(cs[j].h-cs[j].l,Math.abs(cs[j].h-pc),Math.abs(cs[j].l-pc));}
+  const atr=s/14/cs[i].c*100,vr=sv>0?cs[i].v/(sv/20):0;
+  return{sig:cs[i].c>mh&&vr>=p.vm,vr,atr,t:cs[i].t};
+}
+const stopFor=(atr,p)=>p.mode==="own"?p.own:Math.min(Math.max(p.k*atr,4),p.maxLoss);
+
+function fin(t,px,why,at){t.status="fechada";t.exit=px;t.why=why;t.end=at;t.net=(px/t.entry-1)*100-2*t.fee;}
+async function resolve(t){
+  const k=await get(`/api/v3/klines?symbol=${t.sym}&interval=1h&startTime=${t.time}&limit=1000`);
+  let last=null;
+  for(const c of k){
+    const ot=+c[0];
+    if(ot>=t.exp)break;
+    last=+c[4];
+    if(+c[3]<=t.stopP)return fin(t,t.stopP*(1-t.slip/100),"stop",ot);
+    if(+c[2]>=t.tgtP)return fin(t,t.tgtP,"meta",ot);
+  }
+  if(Date.now()>=t.exp)return fin(t,(last||t.entry)*(1-t.slip/100),"tempo",t.exp);
+  t.cur=last||t.entry;
+}
+const whyTxt={stop:"saiu no stop",meta:"saiu na meta",tempo:"saiu pelo prazo"};
+
+function enter(sym){
+  const p=P(),r=rowsBy[sym];
+  if(!r)return;
+  if(S.trades.some(t=>t.status==="aberta"))return alert("Já existe uma operação aberta. Aguarde ela fechar.");
+  const entry=r.ask*(1+p.slip/100),now=Date.now();
+  S.trades.push({id:now,sym,base:r.base,time:now,exp:now+p.days*DAY,entry,cap:p.cap,fee:p.fee,slip:p.slip,vr:r.vr,
+    stopPct:r.stopPct,tgt:p.tgt,stopP:entry*(1-r.stopPct/100),tgtP:entry*(1+p.tgt/100),status:"aberta",cur:entry});
+  save();render();
+}
+window.enter=enter;
+
+function render(){
+  const op=S.trades.filter(t=>t.status==="aberta"),cl=S.trades.filter(t=>t.status==="fechada");
+  $("open").innerHTML=op.length?op.map(t=>{
+    const fl=(t.cur/t.entry-1)*100-2*t.fee,d=Math.max(0,(t.exp-Date.now())/DAY);
+    return `<li><div class="top"><b>${t.base}/USDT</b><span class="${fl>=0?"up":"dn"}">${money(fl,t.cap)}</span></div>
+    <div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.</div></li>`;
+  }).join(""):"<li class='sub'>Nenhuma.</li>";
+  $("hist").innerHTML=cl.length?cl.slice().reverse().map(t=>`<li><div class="top"><b>${t.base}/USDT</b><span class="${t.net>=0?"up":"dn"}">${money(t.net,t.cap)}</span></div>
+    <div class="sub">Entrada ${when(t.time)}, ${whyTxt[t.why]}. Volume do sinal: ${br(t.vr,1)} vezes a média.</div></li>`).join(""):"<li class='sub'>Ainda sem operações fechadas.</li>";
+  if(!cl.length){$("sum").innerHTML="<p class='sub'>Os números aparecem depois da primeira operação fechada. Para uma leitura confiável são necessárias pelo menos 30 operações, o que pode levar meses; é normal, e é o preço de testar sem arriscar dinheiro.</p>";return;}
+  const n=cl.length,r=cl.map(t=>t.net),m=r.reduce((a,b)=>a+b,0)/n,cap=cl[0].cap,w=r.filter(x=>x>0).length;
+  let me="";
+  if(n>=2){const sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1));me=`, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}`;}
+  $("sum").innerHTML=`<p>${n} ${n===1?"operação fechada":"operações fechadas"}, lucro em ${w} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}${me}. Total: R$ ${br(cap*r.reduce((a,b)=>a+b,0)/100)}.</p>
+  <p class="sub">${n<30?`Faltam ${30-n} operações para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,52 (1,0%) por operação na meta de 10%.</p>`;
+}
+
+async function refresh(){
+  const p=P(),st=$("status"),btn=$("go");
+  btn.disabled=true;st.className="mut";st.textContent="Conferindo operações e buscando dados...";
+  try{
+    for(const t of S.trades.filter(t=>t.status==="aberta"))await resolve(t);
+    save();render();
+    const data=await get("/api/v3/ticker/24hr");
+    const cands=data.filter(x=>{
+      if(!x.symbol.endsWith("USDT"))return false;
+      const b=x.symbol.slice(0,-4);
+      return !SKIP.has(b)&&!/(UP|DOWN|BULL|BEAR)$/.test(b)&&+x.quoteVolume>=p.minVol&&+x.askPrice>0&&+x.bidPrice>0;
+    }).sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,60);
+    const ks=[];
+    for(let i=0;i<cands.length;i+=20)ks.push(...await Promise.all(cands.slice(i,i+20).map(x=>klines1d(x.symbol).catch(()=>null))));
+    rowsBy={};
+    const rows=[];
+    cands.forEach((x,i)=>{
+      const e=ks[i]?evalSignal(ks[i],p):null;
+      if(!e||!e.sig)return;
+      const ask=+x.askPrice,bid=+x.bidPrice;
+      const r={sym:x.symbol,base:x.symbol.slice(0,-4),ask,vr:e.vr,stopPct:stopFor(e.atr,p),atr:e.atr,sigT:e.t,cost:2*p.fee+(ask-bid)/ask*100+2*p.slip};
+      rowsBy[r.sym]=r;rows.push(r);
+    });
+    $("list").innerHTML=rows.length?rows.map(r=>`<li><div class="top"><b>${r.base}/USDT</b><span class="up">sinal ativo</span></div>
+      <div class="sub">Rompeu a máxima de 20 dias no candle de ${new Date(r.sigT).toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",timeZone:"UTC"})}, com volume ${br(r.vr,1)} vezes a média. Preço de compra agora ${Number(r.ask.toPrecision(5))} USDT.</div>
+      <div class="sub">Oscilação diária ${br(r.atr,1)}%. Stop ${p.mode==="own"?"seu":"sugerido"}: perda de ${money(r.stopPct,p.cap)}. Meta: ganho de ${money(p.tgt,p.cap)}. Custo estimado ${money(r.cost,p.cap)}.</div>
+      <button class="sm" onclick="enter('${r.sym}')">Simular entrada</button></li>`).join("")
+      :"<li class='sub'>Nenhuma moeda com sinal hoje. Isso é normal: o sinal aparece em poucos dias.</li>";
+    $("ctx").textContent=`${cands.length} moedas analisadas, ${rows.length} com sinal.`;
+    st.textContent="Conectado via "+host.replace("https://","")+" às "+new Date().toLocaleTimeString("pt-BR");
+  }catch(e){
+    st.className="err";st.textContent="Não consegui acessar a Binance: "+e.message+". Se persistir, me envie esta mensagem.";
+  }
+  btn.disabled=false;
+}
+$("go").addEventListener("click",refresh);
+$("cp").addEventListener("click",async()=>{const b=$("bk");try{await navigator.clipboard.writeText(b.value);}catch(e){b.select();document.execCommand("copy");}});
+$("rs").addEventListener("click",()=>{
+  try{const o=JSON.parse($("bk").value);if(!o.trades)throw 0;S=o;save();render();$("ctx").textContent="Backup restaurado.";}
+  catch(e){alert("O texto não é um backup válido.");}
+});
+load();save();render();refresh();
+</script>
+</body>
+</html>

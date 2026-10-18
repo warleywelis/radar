@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar Binance - teste de robustez</title>
+<style>
+:root{--bg:#eef2f4;--panel:#fff;--ink:#14232e;--mut:#5b6b77;--line:#d3dde3;--up:#1e7a5a;--dn:#b3382c;--ac:#0f6e8c}
+@media(prefers-color-scheme:dark){:root{--bg:#10191f;--panel:#17242c;--ink:#e6eef2;--mut:#93a5b0;--line:#2a3b46;--up:#4cc99a;--dn:#ff8a7a;--ac:#5cc0e0}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:16px;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h1{font-size:1.35rem;margin:4px 0 2px}h2{font-size:1.05rem;margin:18px 0 6px}
+p{margin:0 0 10px}.mut,.sub{color:var(--mut);font-size:.88rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+.ctl{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}
+label{display:block;font-size:.85rem;color:var(--mut);margin-bottom:3px}
+input,select,button{width:100%;font:inherit;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600;margin-top:10px}
+button:disabled{opacity:.6}
+summary{cursor:pointer;margin:10px 0 8px;color:var(--ac)}
+#status.err{color:var(--dn)}
+ul{list-style:none;margin:0;padding:0}
+li{padding:9px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
+.top{display:flex;justify-content:space-between;gap:8px}
+</style>
+</head>
+<body>
+<h1>Radar Binance, teste de robustez</h1>
+<p class="mut">Varia o prazo da máxima e o volume forte do momentum diário, em dois grupos de moedas, para ver se a vantagem é estável ou sumiu ao menor ajuste. Estudo, não recomendação de compra.</p>
+
+<div class="panel">
+  <div class="ctl">
+    <div><label for="cap">Capital por operação (R$)</label><input id="cap" type="number" inputmode="decimal" value="50"></div>
+    <div><label for="tgt">Meta de ganho (%)</label><select id="tgt"><option>5</option><option selected>10</option><option>20</option></select></div>
+    <div class="full"><label for="mode">Stop loss</label><select id="mode"><option value="sug">Stop sugerido pelo risco</option><option value="own">Meu próprio stop</option></select></div>
+    <div class="full"><label for="own">Meu stop (%), usado só se escolher "meu próprio stop"</label><input id="own" type="number" inputmode="decimal" value="8"></div>
+  </div>
+  <details><summary>Ajustes avançados</summary>
+    <div class="ctl">
+      <div><label for="days">Prazo máximo (dias)</label><input id="days" type="number" inputmode="decimal" value="7"></div>
+      <div><label for="k">Folga do stop (x oscilação diária)</label><input id="k" type="number" inputmode="decimal" value="2" step="0.5"></div>
+      <div><label for="maxl">Perda máxima aceita (%)</label><input id="maxl" type="number" inputmode="decimal" value="15"></div>
+      <div><label for="vol">Volume mínimo 24h (milhões USDT)</label><input id="vol" type="number" inputmode="decimal" value="2"></div>
+      <div><label for="fee">Taxa por ordem (%)</label><input id="fee" type="number" inputmode="decimal" value="0.075" step="0.005"></div>
+      <div><label for="slip">Slippage por ordem (%)</label><input id="slip" type="number" inputmode="decimal" value="0.1" step="0.05"></div>
+    </div>
+  </details>
+  <button id="bt">Rodar teste (demora de 1 a 3 minutos)</button>
+</div>
+
+<p id="status" class="mut">Aguardando.</p>
+<div id="res"></div>
+
+<p class="mut">Como ler: se a vantagem for real, ela deve aparecer na maioria das combinações e nos dois grupos de moedas, e não só numa combinação isolada. Uma média positiva cuja margem de erro é maior que ela própria pode ser sorte. Combinações que só funcionam numa das metades do período também podem ser coincidência. O teste só inclui moedas que existem hoje, o que favorece o momentum e deixa tudo mais otimista que a realidade. Em candles diários, se meta e stop forem atingidos no mesmo dia, conta o stop.</p>
+
+<script>
+const HOSTS=["https://api.binance.com","https://data-api.binance.vision"];
+const SKIP=new Set(["USDC","FDUSD","TUSD","BUSD","USDP","DAI","EUR","TRY","BRL","AEUR","USD1","XUSD","PAXG"]);
+const PAGES=2,DAY=864e5,LS=[10,20,50],VMS=[1.5,2,3];
+let host=null;
+const $=id=>document.getElementById(id);
+const br=(v,d=2)=>v.toFixed(d).replace(".",",");
+const money=(pct,cap)=>`R$ ${br(cap*pct/100)} (${br(pct,1)}%)`;
+const nv=(id,d)=>{const v=parseFloat($(id).value);return isNaN(v)?d:v;};
+const P=()=>({cap:nv("cap",50),tgt:nv("tgt",10),days:Math.max(1,Math.round(nv("days",7))),mode:$("mode").value,own:nv("own",8),k:nv("k",2),maxLoss:nv("maxl",15),minVol:nv("vol",2)*1e6,fee:nv("fee",0.075),slip:nv("slip",0.1)});
+
+async function get(path){
+  let last;
+  for(const h of(host?[host]:HOSTS)){
+    try{const r=await fetch(h+path);if(!r.ok)throw new Error("HTTP "+r.status);host=h;return await r.json();}
+    catch(e){last=e;}
+  }
+  host=null;throw last;
+}
+async function klines(sym){
+  let out=[],end=Date.now();
+  for(let p=0;p<PAGES;p++){
+    const k=await get(`/api/v3/klines?symbol=${sym}&interval=1d&limit=1000&endTime=${end}`);
+    if(!k.length)break;out=k.concat(out);end=k[0][0]-1;
+    if(k.length<1000)break;
+  }
+  return out.map(c=>({t:+c[0],o:+c[1],h:+c[2],l:+c[3],c:+c[4],v:+c[5]}));
+}
+function atrSeries(cs,n=14){
+  const a=[];
+  for(let i=0;i<cs.length;i++){
+    if(i<n){a.push(null);continue;}
+    let s=0;
+    for(let j=i-n+1;j<=i;j++){const p=cs[j-1].c;s+=Math.max(cs[j].h-cs[j].l,Math.abs(cs[j].h-p),Math.abs(cs[j].l-p));}
+    a.push(s/n/cs[i].c*100);
+  }
+  return a;
+}
+function feats(cs,L){
+  return cs.map((c,i)=>{
+    if(i<L+1)return null;
+    let mh=0,sv=0;
+    for(let j=i-L;j<i;j++){if(cs[j].h>mh)mh=cs[j].h;sv+=cs[j].v;}
+    return{brk:c.c>mh,vr:sv>0?c.v/(sv/L):0};
+  });
+}
+const stopFor=(atr,p)=>p.mode==="own"?p.own:Math.min(Math.max(p.k*atr,4),p.maxLoss);
+
+function sim(cs,atr,fe,p,vm){
+  const out=[];let i=51;
+  while(i<cs.length-p.days-2){
+    const ok=atr[i]&&(vm===null||(fe[i]&&fe[i].brk&&fe[i].vr>=vm));
+    if(ok){
+      const s=stopFor(atr[i],p),entry=cs[i+1].o*(1+p.slip/100),stopP=entry*(1-s/100),tgtP=entry*(1+p.tgt/100);
+      let exit=null,k=i+1;
+      for(;k<=i+p.days;k++){
+        if(cs[k].l<=stopP){exit=stopP*(1-p.slip/100);break;}
+        if(cs[k].h>=tgtP){exit=tgtP;break;}
+      }
+      if(exit===null){k=i+p.days;exit=cs[k].c*(1-p.slip/100);}
+      out.push({r:(exit/entry-1)*100-2*p.fee,pos:(cs[i].t-p.t0)/p.span});
+      i=k+1;continue;
+    }
+    i++;
+  }
+  return out;
+}
+const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:0;
+function stats(a){
+  const n=a.length;
+  if(n<2)return{n};
+  const r=a.map(x=>x.r),m=mean(r),sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1)),me=2*sd/Math.sqrt(n);
+  const h1=a.filter(x=>x.pos<0.5).map(x=>x.r),h2=a.filter(x=>x.pos>=0.5).map(x=>x.r);
+  return{n,m,me,w:r.filter(x=>x>0).length/n*100,h1:h1.length?mean(h1):null,h2:h2.length?mean(h2):null};
+}
+function line(name,s,p){
+  if(s.n<2)return `<li><b>${name}</b><div class="sub">${s.n} operações. Poucas para avaliar.</div></li>`;
+  const f=v=>v===null?"sem operações":money(v,p.cap);
+  return `<li><div class="top"><b>${name}</b><span>${s.n} operações</span></div>
+  <div class="sub">Lucro em ${br(s.w,0)}%. Média: ${money(s.m,p.cap)}, margem de erro ± ${money(s.me,p.cap)}.${s.n<30?" Poucas operações.":""}</div>
+  <div class="sub">Primeira metade: ${f(s.h1)}. Segunda metade: ${f(s.h2)}.</div></li>`;
+}
+
+async function backtest(){
+  const p=P(),st=$("status"),btn=$("bt");
+  btn.disabled=true;st.className="mut";
+  try{
+    const data=await get("/api/v3/ticker/24hr");
+    const all=data.filter(x=>{
+      if(!x.symbol.endsWith("USDT"))return false;
+      const b=x.symbol.slice(0,-4);
+      return !SKIP.has(b)&&!/(UP|DOWN|BULL|BEAR)$/.test(b)&&+x.quoteVolume>=p.minVol&&x.symbol!=="BTCUSDT";
+    }).sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,60).map(x=>x.symbol);
+    const groups=[{name:"Moedas mais negociadas (posições 1 a 25)",syms:all.slice(0,25)},{name:"Moedas menos negociadas (posições 26 a 60)",syms:all.slice(25)}];
+    st.textContent="Baixando histórico do Bitcoin...";
+    const btc=await klines("BTCUSDT");
+    p.t0=btc[0].t;p.span=btc[btc.length-1].t-btc[0].t||1;
+    const res=groups.map(()=>({ctl:[],cells:{}}));
+    let done=0;const total=groups.reduce((s,g)=>s+g.syms.length,0);
+    for(let gi=0;gi<groups.length;gi++){
+      const syms=groups[gi].syms;
+      for(let b=0;b<syms.length;b+=4){
+        const batch=await Promise.all(syms.slice(b,b+4).map(s=>klines(s).catch(()=>null)));
+        for(const cs of batch){
+          done++;st.textContent=`Processando moedas (${done} de ${total})...`;
+          if(!cs||cs.length<120)continue;
+          const atr=atrSeries(cs);
+          res[gi].ctl.push(...sim(cs,atr,null,p,null));
+          for(const L of LS){
+            const fe=feats(cs,L);
+            for(const vm of VMS){
+              const key=L+"-"+vm;
+              (res[gi].cells[key]=res[gi].cells[key]||[]).push(...sim(cs,atr,fe,p,vm));
+            }
+          }
+        }
+      }
+    }
+    $("res").innerHTML=groups.map((g,gi)=>{
+      const cs=[];let pos=0,sig=0,both=0,tot=0;
+      for(const L of LS)for(const vm of VMS){
+        const s=stats(res[gi].cells[L+"-"+vm]||[]);cs.push([L,vm,s]);
+        if(s.n>=2){tot++;if(s.m>0)pos++;if(s.m-s.me>0)sig++;if(s.h1!==null&&s.h2!==null&&s.h1>0&&s.h2>0)both++;}
+      }
+      return `<h2>${g.name}</h2><div class="panel">
+      <p>Das ${tot} combinações: ${pos} com média positiva, ${sig} com média positiva mesmo descontada a margem de erro, ${both} positivas nas duas metades do período.</p>
+      <ul>${line("Controle: entrar em qualquer dia, sem sinal",stats(res[gi].ctl),p)}${cs.map(([L,vm,s])=>line(`Máxima de ${L} dias, volume ${br(vm,1)} vez${vm>1?"es":""} a média`,s,p)).join("")}</ul></div>`;
+    }).join("");
+    st.textContent=`Teste concluído às ${new Date().toLocaleTimeString("pt-BR")}, meta de ${br(p.tgt,0)}% e prazo de ${p.days} dias.`;
+  }catch(e){
+    st.className="err";st.textContent="Erro no teste: "+e.message+". Se persistir, me envie esta mensagem.";
+  }
+  btn.disabled=false;
+}
+$("bt").addEventListener("click",backtest);
+</script>
+</body>
+</html>
