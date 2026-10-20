@@ -16,7 +16,7 @@ button{font:inherit;padding:6px 12px;margin:8px 0 0;border-radius:8px;border:1px
 ul{list-style:none;margin:0;padding:0}
 li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
-.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}
+.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}.row{padding:8px 0;border-top:1px solid var(--line)}
 a{color:var(--ac)}
 </style>
 </head>
@@ -30,12 +30,16 @@ a{color:var(--ac)}
 <div class="panel"><ul id="open"><li class="sub">Nenhuma.</li></ul></div>
 <h2>Sinais da última execução</h2>
 <div class="panel"><ul id="sig"><li class="sub">Sem dados ainda.</li></ul></div>
+<h2>Modelo de previsão (3 caminhos)</h2>
+<div class="panel" id="model"><p class="sub">Ainda não treinado. Rode o fluxo "treino" na aba Ações do GitHub.</p></div>
 <h2>Resumo</h2>
 <div class="panel" id="sum"><p class="sub">Sem dados ainda.</p></div>
 <h2>Operações-sombra (todos os sinais)</h2>
 <div class="panel" id="shadow"><p class="sub">Sem dados ainda.</p></div>
 <h2>Histórico</h2>
 <div class="panel"><ul id="hist"><li class="sub">Ainda sem operações fechadas.</li></ul></div>
+<h2>Teste de regras de saída</h2>
+<div class="panel" id="saidas"><p class="sub">Ainda não foi rodado. Ele é executado manualmente na aba Actions do GitHub (fluxo "saidas").</p></div>
 <h2>Teste sem viés de sobrevivência</h2>
 <div class="panel" id="surv"><p class="sub">Ainda não foi rodado. Ele é executado manualmente na aba Actions do GitHub.</p></div>
 
@@ -75,7 +79,7 @@ function fmtStats(s,cap){
   return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
 }
 async function main(){
-  const [tr,last,sv,shd]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json")]);
+  const [tr,last,sv,shd,mdl,sd]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json")]);
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
     $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}.`;
@@ -97,15 +101,42 @@ async function main(){
     if(n>=2){const sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1));me=`, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}`;}
     $("sum").innerHTML=`<p>${n} ${n===1?"operação fechada":"operações fechadas"}, lucro em ${w} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}${me}. Total: R$ ${br(cap*r.reduce((a,b)=>a+b,0)/100)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,52 (1,0%) por operação.</p>`;
   }else if(tr){$("sum").innerHTML="<p class='sub'>Os números aparecem depois da primeira operação fechada. Para uma leitura confiável são necessárias pelo menos 30 operações.</p>";}
-  const sh=(shd&&shd.trades)||[],shc=sh.filter(t=>t.status==="fechada"),sho=sh.filter(t=>t.status==="aberta");
+  const sh=(shd&&shd.trades)||[];
+  const agg=(list)=>{
+    const c=list.filter(t=>t.status==="fechada"),o=list.filter(t=>t.status==="aberta").length;
+    let s=`${o} ${o===1?"aberta":"abertas"}, ${c.length} ${c.length===1?"fechada":"fechadas"}.`;
+    if(c.length>=2){const r=c.map(t=>t.net),k=r.length,m=r.reduce((x,y)=>x+y,0)/k,sd=Math.sqrt(r.reduce((x,y)=>x+(y-m)**2,0)/(k-1)),w=r.filter(x=>x>0).length;
+      s+=` Lucro em ${w} de ${k} (${br(w/k*100,0)}%). Média ${money(m,c[0].cap)}, margem de erro ± ${money(2*sd/Math.sqrt(k),c[0].cap)}.${k<30?` Faltam ${30-k} para uma leitura confiável.`:""}`;}
+    else if(c.length===1)s+=` A primeira fechou com ${money(c[0].net,c[0].cap)}; uma só não diz nada.`;
+    return s;
+  };
   if(sh.length){
-    let txt=`<p>${sho.length} ${sho.length===1?"aberta":"abertas"} e ${shc.length} ${shc.length===1?"fechada":"fechadas"}.</p>`;
-    if(shc.length>=2){
-      const r=shc.map(t=>t.net),n=r.length,m=r.reduce((a,b)=>a+b,0)/n,sd=Math.sqrt(r.reduce((s,x)=>s+(x-m)**2,0)/(n-1)),w=r.filter(x=>x>0).length,cap=shc[0].cap;
-      txt+=`<p>Lucro em ${w} de ${n} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}, com margem de erro de ± ${money(2*sd/Math.sqrt(n),cap)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações fechadas para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,32 (0,6%) por operação.</p>`;
-    }else if(shc.length===1){txt+=`<p class="sub">Resultado da primeira: ${money(shc[0].net,shc[0].cap)}. Uma operação só não diz nada.</p>`;}
-    txt+=`<p class="sub">Estas operações registram o resultado de cada sinal, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido, e não representam operações reais.</p>`;
-    $("shadow").innerHTML=txt;
+    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
+  }
+  if(mdl&&mdl.report){
+    const r=mdl.report,t=r.teste,cap=50,m=(last&&last.model)||{validated:mdl.validated,demoted:mdl.demoted,live:mdl.live};
+    const fmt=s=>s&&s.n?`${s.n} operações, média ${money(s.mean,cap)} ± ${money(2*s.se,cap)}`:"sem operações";
+    let h=`<p><b>${m.demoted?"Rebaixado: errou mais que o básico nas previsões ao vivo, e o robô voltou à regra de momentum.":m.validated?"Validado: gera os sinais de entrada do robô.":"Ainda não validado: o robô usa a regra de momentum e só registra as previsões do modelo."}</b></p>
+    <p class="sub">Treinado em ${when(mdl.trainedAt)} com ${r.exemplos} exemplos de ${r.moedas} moedas, inclusive as que saíram da Binance. Teste cronológico em ${r.foraDaAmostra} previsões fora da amostra.</p>
+    <p>Erro de previsão (menor é melhor): ${br(r.logLoss,3)} contra ${br(r.logLossBase,3)} de quem só chuta a frequência de cada caminho, ${br((1-r.logLoss/r.logLossBase)*100,1)}% de melhora. Acerto do caminho mais provável: ${br(r.acuracia*100,1)}% contra ${br(r.acuraciaBase*100,1)}%.</p>
+    <p>Teste final (parte mais recente do período, nunca usada para escolher nada). Sinais do modelo${r.limite!==null?` (chance de alta de ${br(r.limite*100,0)}% ou mais)`:""}: ${fmt(t.modelo)}. Entradas ao acaso: ${fmt(t.controle)}. Regra de momentum: ${fmt(t.momentum)}. Diferença do modelo contra o acaso: z = ${br(t.z,2)} (precisa de pelo menos 2).</p>`;
+    h+=`<p class="sub">Calibração: ${r.calibracao.filter(c=>c.n>=30).map(c=>`quando previu alta de ${br(c.lo*100,0)}% a ${br(c.hi*100,0)}%, aconteceu em ${br(c.observado*100,0)}% (${c.n} casos)`).join("; ")}.</p>`;
+    const lv=m.live||mdl.live;
+    if(lv&&lv.n)h+=`<p class="sub">Ao vivo: ${lv.n} previsões já conferidas com o resultado real. Erro ${br(lv.ll/lv.n,3)} contra ${br(lv.llb/lv.n,3)} do básico, e o modelo continua aprendendo a cada resultado.</p>`;
+    else h+=`<p class="sub">Ao vivo: ainda sem previsões conferidas. Cada previsão leva 8 dias para ter o resultado real, e então o modelo aprende com ela.</p>`;
+    if(last&&last.modelTop&&last.modelTop.length)h+=`<p><b>Maiores chances de alta hoje:</b></p>`+last.modelTop.map(c=>`<div class="row"><div class="top"><b>${c.base}/USDT</b><span class="up">alta ${br(c.p[0]*100,0)}%</span></div><div class="sub">estabilidade ${br(c.p[1]*100,0)}%, baixa ${br(c.p[2]*100,0)}%</div></div>`).join("");
+    $("model").innerHTML=h;
+  }
+  if(sd&&sd.variantes){
+    const cap=50,f=v=>v===null||v===undefined?"sem dados":money(v,cap);
+    const vs=sd.variantes.slice().sort((a,b)=>(b.sinal.mean||-99)-(a.sinal.mean||-99));
+    $("saidas").innerHTML=`<p class="sub">Gerado em ${when(sd.generated)}. Mesmos sinais de momentum de ${sd.moedas} moedas (inclusive as que saíram da Binance), com ${sd.sinais} sinais, testados com sete regras de saída. A lista está ordenada pelo resultado médio, do melhor ao pior.</p>`+vs.map(v=>{const s=v.sinal,k=v.controle;
+      if(!s||!s.n)return `<div class="row"><b>${v.nome}</b><div class="sub">Sem operações suficientes.</div></div>`;
+      return `<div class="row"><div class="top"><b>${v.nome}</b></div>
+      <div class="sub">${s.n} operações, lucro em ${br(s.win,0)}%. Média ${f(s.mean)}, margem de erro ± ${f(s.margem)}. Ganho médio ${f(s.ganhoMedio)}, perda média ${f(s.perdaMedia)}, pior operação ${f(s.pior)}.</div>
+      <div class="sub">Saídas: ${br(s.meta,0)}% na meta, ${br(s.stop,0)}% no stop, ${br(s.prazo,0)}% pelo prazo. Primeira metade do período: ${f(s.metade1)}, segunda metade: ${f(s.metade2)}.</div>
+      <div class="sub">Entradas ao acaso com a mesma saída: média ${f(k&&k.n?k.mean:null)}. Vantagem do sinal sobre o acaso: ${f(v.vantagem)}${v.z!==null&&v.z!==undefined?` (z = ${br(v.z,1)})`:""}.</div>
+      <div class="sub">Com o custo de converter reais em USDT e voltar (${br(sd.conversao||0.1,1)}% por conversão): média ${f(v.mediaComConversao)}.</div></div>`;}).join("")+`<p class="sub">Cuidado: testar sete regras e escolher a melhor aumenta o risco de se iludir. Uma regra só merece confiança se tiver z de 3 ou mais contra o acaso, média positiva mesmo com o custo de conversão e resultado positivo nas duas metades do período. O teste conta o stop quando meta e stop são tocados no mesmo dia e sai na abertura se o preço abrir abaixo do stop.</p>`;
   }
   if(sv){
     const cap=50,g=sv.groups,a=g.A_todas_inclusive_as_que_sairam,b=g.B_so_as_que_negociam_hoje;
