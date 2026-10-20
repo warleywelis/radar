@@ -111,7 +111,7 @@ async function main(){
     return s;
   };
   if(sh.length){
-    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
+    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
   }
   if(mdl&&mdl.report){
     const r=mdl.report,t=r.teste,cap=50,m=(last&&last.model)||{validated:mdl.validated,demoted:mdl.demoted,live:mdl.live};
