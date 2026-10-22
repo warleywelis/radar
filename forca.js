@@ -151,13 +151,16 @@ function sequential(sigs, minBars, rule) {
   const contCrescente = contMeans.every((v, i) => i === 0 || v >= contMeans[i - 1] - 1e-9);
   const tStart = test[0].entryT, tEnd = test[test.length - 1].entryT + (H + 1) * DAY;
   const byScore = (a, b) => b.score - a.score;
+  // Metas por barras (em % do capital) e folga do stop por barras (em oscilações diárias), ambos dinâmicos nos dois sentidos
+  const MAPA = { 1: 3, 2: 4, 3: 5, 4: 8, 5: 10 }, MULT = { 1: 1, 2: 1.25, 3: 1.5, 4: 2, 5: 2.5 };
   function runDynamic(V) {
-    let eq = 1, peak = 1, dd = 0, pos = null, n = 0, w = 0, run = 0, worst = 0, hold = 0, sumNet = 0; const why = {};
+    let eq = 1, peak = 1, dd = 0, pos = null, n = 0, w = 0, run = 0, worst = 0, hold = 0, chg = 0, chgN = 0; const why = {}, nets = [];
     const close = (px, reason) => {
       const net = (px / pos.entry - 1) * 100 - 2 * FEE;
-      eq *= 1 + net / 100; sumNet += net; n++; hold += pos.days; if (net > 0) { w++; run = 0; } else { run++; worst = Math.max(worst, run); }
+      nets.push(net); eq *= 1 + net / 100; n++; hold += pos.days; if (net > 0) { w++; run = 0; } else { run++; worst = Math.max(worst, run); }
       peak = Math.max(peak, eq); dd = Math.max(dd, 1 - eq / peak); why[reason] = (why[reason] || 0) + 1; pos = null;
     };
+    const stopAt = (bars, a) => clamp(MULT[bars] * a, 3, 15);
     const intraday = (cs, idx, bars, isEntry) => {
       const o = cs[idx].o, h = cs[idx].h, l = cs[idx].l, c = cs[idx].c, tp = V.target(bars), tgtP = tp ? pos.entry * (1 + tp / 100) : null;
       if (!isEntry) {
@@ -178,10 +181,14 @@ function sequential(sigs, minBars, rule) {
         else {
           const f = featAt(pos.sym, idx - 1);
           let bars = pos.bars;
-          if (f) bars = barsOf(edgesC, scoreOf(Mc, [...f.x, clamp((cs[idx].o / pos.c0 - 1) / pos.af0, -3, 3), (H - pos.days) / H]));
+          if (f) {
+            const raw = barsOf(edgesC, scoreOf(Mc, [...f.x, clamp((cs[idx].o / pos.c0 - 1) / pos.af0, -3, 3), (H - pos.days) / H]));
+            bars = V.smooth ? clamp(raw, pos.bars - 1, pos.bars + 1) : raw;
+            chg += Math.abs(bars - pos.bars); chgN++; pos.bars = bars;
+            if (V.dynStop) pos.stopP = pos.entry * (1 - stopAt(bars, ML.atrPctAt(cs, idx - 1) || pos.af0 * 100) / 100);
+          }
           let closedAtOpen = false;
-          if (V.exit1 && bars === 1) { close(cs[idx].o * (1 - SLIP / 100), "1 barra"); closedAtOpen = true; }
-          else if (V.rotate && bars <= 2) {
+          if (V.rotate && bars <= 2) {
             const alt = (candBy.get(d) || []).filter(x => x.sym !== pos.sym && x.bars >= 3 && x.bars > bars).sort(byScore)[0];
             if (alt) { close(cs[idx].o * (1 - SLIP / 100), "troca de moeda"); closedAtOpen = true; }
           }
@@ -193,22 +200,24 @@ function sequential(sigs, minBars, rule) {
         if (c) {
           const cs = series[c.sym], idx = idxOf[c.sym].get(d);
           if (idx !== undefined) {
-            const entry = cs[idx].o * (1 + SLIP / 100);
-            pos = { sym: c.sym, entry, stopP: entry * (1 - c.stopPct / 100), c0: c.c0, af0: c.af0, days: 0, bars: c.bars, last: cs[idx].o };
+            const entry = cs[idx].o * (1 + SLIP / 100), sp = V.dynStop ? stopAt(c.bars, c.af0 * 100) : c.stopPct;
+            pos = { sym: c.sym, entry, stopP: entry * (1 - sp / 100), c0: c.c0, af0: c.af0, days: 0, bars: c.bars, last: cs[idx].o };
             intraday(cs, idx, c.bars, true);
           }
         }
       }
     }
     if (pos) close(pos.last * (1 - SLIP / 100), "aberta no fim");
-    const final = 50 * eq * (1 - CONV / 100) ** 2;
-    return { id: V.id, nome: V.nome, operacoes: n, acerto: n ? w / n * 100 : null, mediaPorOperacao: n ? sumNet / n : null, diasMedios: n ? hold / n : null, finalComConversao: final, retornoPct: (final / 50 - 1) * 100, quedaMaxima: dd * 100, maiorSequenciaDePerdas: worst, motivos: why };
+    const final = 50 * eq * (1 - CONV / 100) ** 2, m = n ? mean(nets) : null, se = n > 1 ? Math.sqrt(nets.reduce((a, x) => a + (x - m) ** 2, 0) / (n - 1)) / Math.sqrt(n) : null;
+    return { id: V.id, nome: V.nome, operacoes: n, acerto: n ? w / n * 100 : null, mediaPorOperacao: m, seMedia: se, diasMedios: n ? hold / n : null, finalComConversao: final, retornoPct: (final / 50 - 1) * 100, quedaMaxima: dd * 100, maiorSequenciaDePerdas: worst, mudancaMediaDeBarras: chgN ? chg / chgN : null, motivos: why, passa: n >= 30 && se !== null && m - 2 * se > 0 && final > 50 };
   }
   const dinamica = [
-    { id: "atual", nome: "Meta fixa de 10% (a atual), entrando só com 3 barras ou mais", target: () => 10 },
-    { id: "sem", nome: "Sem meta (só stop e prazo de 7 dias), entrando só com 3 barras ou mais", target: () => null },
-    { id: "dinamica", nome: "Sua regra: meta de 10% com 5 barras, 5% com 3 a 4, 3% com 2, e encerra com 1 barra", target: b => b >= 5 ? 10 : b >= 3 ? 5 : 3, exit1: true },
-    { id: "troca", nome: "Sua regra + troca para a moeda de melhor sinal quando a atual cai para 2 barras ou menos", target: b => b >= 5 ? 10 : b >= 3 ? 5 : 3, exit1: true, rotate: true }
+    { id: "atual", nome: "Referência: meta fixa de 10% e stop fixo", target: () => 10 },
+    { id: "sem", nome: "Referência: sem meta, stop fixo e prazo de 7 dias", target: () => null },
+    { id: "barras", nome: "Metas por barras (1: 3%, 2: 4%, 3: 5%, 4: 8%, 5: 10%) e stop fixo", target: b => MAPA[b] },
+    { id: "barrasStop", nome: "Metas por barras e stop dinâmico (muda com as barras e com a oscilação do dia)", target: b => MAPA[b], dynStop: true },
+    { id: "suave", nome: "Anterior, com barras suavizadas (mudam no máximo 1 nível por dia, contra oscilação brusca)", target: b => MAPA[b], dynStop: true, smooth: true },
+    { id: "troca", nome: "Anterior, e troca para a moeda de melhor sinal quando a atual cai para 2 barras ou menos", target: b => MAPA[b], dynStop: true, smooth: true, rotate: true }
   ].map(runDynamic);
 
   // Modelo final (todos os sinais) para uso do robô e da página
@@ -219,7 +228,8 @@ function sequential(sigs, minBars, rule) {
     modelo: { w: Mf.w.map(v => ML.round(v)), b: ML.round(Mf.b), mu: Mf.mu.map(v => ML.round(v)), sd: Mf.sd.map(v => ML.round(v)), edges: edgesF.map(v => ML.round(v)) },
     periodo: { sinais: sigs.length, treino: train.length, teste: test.length, de: test[0].entryT, ate: test[test.length - 1].entryT },
     calibracao: { niveis: levels, todos: all, n7Crescente: increasing(m7), semMetaCrescente: increasing(mSem) },
-    estrategia: strategy, dinamica,
+    estrategia: strategy, dinamica, mapa: { metas: MAPA, folgaDoStop: MULT },
+    confiabilidade: { barrasDeEntradaCrescem: increasing(m7) && increasing(mSem), barrasDeContinuacaoCrescem: contCrescente },
     continuacao: { niveis: contLevels, crescente: contCrescente, modelo: { w: Mc.w.map(v => ML.round(v)), b: ML.round(Mc.b), mu: Mc.mu.map(v => ML.round(v)), sd: Mc.sd.map(v => ML.round(v)), edges: edgesC.map(v => ML.round(v)) } },
     aviso: "As barras valem apenas se o resultado melhorar de forma consistente de 1 para 5 barras no período de teste, que não foi usado para criar as barras."
   };
