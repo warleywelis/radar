@@ -16,7 +16,10 @@ button{font:inherit;padding:6px 12px;margin:8px 0 0;border-radius:8px;border:1px
 ul{list-style:none;margin:0;padding:0}
 li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
-.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}.row{padding:8px 0;border-top:1px solid var(--line)}
+.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:18px;vertical-align:middle;margin-right:6px}
+.bars i{display:block;width:5px;background:var(--line);border-radius:1px}.bars i.on{background:var(--ac)}
+.bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:8px}.bars i:nth-child(3){height:11px}.bars i:nth-child(4){height:15px}.bars i:nth-child(5){height:18px}.row{padding:8px 0;border-top:1px solid var(--line)}
 a{color:var(--ac)}
 </style>
 </head>
@@ -32,6 +35,8 @@ a{color:var(--ac)}
 <div class="panel"><ul id="sig"><li class="sub">Sem dados ainda.</li></ul></div>
 <h2>Modelo de previsão (3 caminhos)</h2>
 <div class="panel" id="model"><p class="sub">Ainda não treinado. Rode o fluxo "treino" na aba Ações do GitHub.</p></div>
+<h2>Força do sinal e a estratégia de fechar no lucro e reabrir</h2>
+<div class="panel" id="forca"><p class="sub">Ainda não calculada. Rode o fluxo "forca" na aba Ações do GitHub.</p></div>
 <h2>Resumo</h2>
 <div class="panel" id="sum"><p class="sub">Sem dados ainda.</p></div>
 <h2>Operações-sombra (todos os sinais)</h2>
@@ -71,6 +76,15 @@ function showChart(box,sym){
   wrap.appendChild(sc);box.appendChild(wrap);
 }
 document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.chart");if(b)showChart(b.nextElementSibling,b.dataset.sym);});
+const barsHtml=k=>`<span class="bars" aria-label="força ${k} de 5">${[1,2,3,4,5].map(i=>`<i class="${i<=k?"on":""}"></i>`).join("")}</span>`;
+const forcaTxt=k=>k>=4?"forte":k===3?"média":"fraca";
+const clip3=v=>Math.max(-3,Math.min(3,v));
+function liveBars(fc,s,p){ // força dinâmica: recalcula com o preço de agora
+  if(!fc||!s.x||!s.c||!s.a)return s.bars||null;
+  const F=fc.modelo,gap=clip3(((p||s.ask)/s.c-1)/(s.a/100)),x=[...s.x,gap];
+  const sc=F.b+x.reduce((sum,v,j)=>sum+F.w[j]*(v-F.mu[j])/F.sd[j],0);
+  return 1+F.edges.filter(e=>sc>e).length;
+}
 const chartBtn=sym=>`<button class="chart" data-sym="${sym}">Ver gráfico</button><div class="tv"></div>`;
 
 function fmtStats(s,cap){
@@ -79,11 +93,12 @@ function fmtStats(s,cap){
   return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
 }
 async function main(){
-  const [tr,last,sv,shd,mdl,sd]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json")]);
+  const [tr,last,sv,shd,mdl,sd,fc]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json")]);
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
     $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}.`;
-    $("sig").innerHTML=last.signals.length?last.signals.map(s=>`<li><div class="top"><b>${s.base}/USDT</b><span class="up">sinal</span></div><div class="sub">Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.</div>${chartBtn(s.sym)}</li>`).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
+    const pr=await Promise.all(last.signals.map(s=>price(s.sym)));
+    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const k=liveBars(fc,s,pr[i]);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
   }
   const trades=(tr&&tr.trades)||[],op=trades.filter(t=>t.status==="aberta"),cl=trades.filter(t=>t.status==="fechada");
   if(op.length){
@@ -137,6 +152,19 @@ async function main(){
       <div class="sub">Saídas: ${br(s.meta,0)}% na meta, ${br(s.stop,0)}% no stop, ${br(s.prazo,0)}% pelo prazo. Primeira metade do período: ${f(s.metade1)}, segunda metade: ${f(s.metade2)}.</div>
       <div class="sub">Entradas ao acaso com a mesma saída: média ${f(k&&k.n?k.mean:null)}. Vantagem do sinal sobre o acaso: ${f(v.vantagem)}${v.z!==null&&v.z!==undefined?` (z = ${br(v.z,1)})`:""}.</div>
       <div class="sub">Com o custo de converter reais em USDT e voltar (${br(sd.conversao||0.1,1)}% por conversão): média ${f(v.mediaComConversao)}.</div></div>`;}).join("")+`<p class="sub">Cuidado: testar sete regras e escolher a melhor aumenta o risco de se iludir. Uma regra só merece confiança se tiver z de 3 ou mais contra o acaso, média positiva mesmo com o custo de conversão e resultado positivo nas duas metades do período. O teste conta o stop quando meta e stop são tocados no mesmo dia e sai na abertura se o preço abrir abaixo do stop.</p>`;
+  }
+  if(fc&&fc.calibracao){
+    const cap=50,cb=fc.calibracao,pf=fc.periodo,f=(s)=>s&&s.n&&s.mean!==null?money(s.mean,cap):"sem dados";
+    let h=`<p class="sub">Calculada em ${when(fc.generated)} com ${pf.sinais} sinais de momentum no histórico (inclusive moedas que saíram). As barras foram criadas com os 60% mais antigos e testadas nos 40% mais recentes (${pf.teste} sinais), que não entraram na criação. A força de cada sinal combina volume, quão acima da máxima o preço fechou, tendência da moeda, estado do Bitcoin e se o preço já fugiu do ponto do sinal, e muda com o preço.</p>`;
+    h+=`<p><b>${cb.n7Crescente&&cb.semMetaCrescente?"As barras fazem sentido: o resultado melhora de 1 para 5 barras.":cb.n7Crescente||cb.semMetaCrescente?"As barras fazem sentido só em parte: o resultado nem sempre melhora de uma barra para a seguinte.":"As barras não fizeram sentido no teste: mais barras não significou melhor resultado."}</b></p>`;
+    h+=cb.niveis.map(l=>`<div class="row"><div class="top"><span>${barsHtml(l.nivel)}<b>${l.nivel} ${l.nivel===1?"barra":"barras"}</b></span><span class="sub">${l.n} sinais</span></div><div class="sub">Sem meta (só stop e prazo de 7 dias): média ${f(l.semMeta)}${l.semMeta&&l.semMeta.se?` ± ${money(2*l.semMeta.se,cap)}`:""}, lucro em ${l.semMeta&&l.semMeta.win!==null?br(l.semMeta.win,0):"-"}%. Meta 10%: média ${f(l.meta10)}, lucro em ${l.meta10&&l.meta10.win!==null?br(l.meta10.win,0):"-"}%. Meta 5%: média ${f(l.meta5)}, lucro em ${l.meta5&&l.meta5.win!==null?br(l.meta5.win,0):"-"}%.</div></div>`).join("");
+    h+=`<p style="margin-top:12px"><b>A sua ideia, testada na carteira de R$ 50:</b> comprar, fechar quando atingir a meta e reabrir no melhor sinal com barras suficientes, uma operação por vez, só no período de teste, com custo de conversão (${br(fc.conversao,1)}% por conversão, só no começo e no fim).</p>`;
+    const rules=[...new Set(fc.estrategia.map(e=>e.regra))];
+    for(const r of rules){
+      h+=`<p class="sub" style="margin:8px 0 2px"><b>${r}</b></p>`+fc.estrategia.filter(e=>e.regra===r).map(e=>`<div class="sub">${e.minBars===1?"Qualquer sinal":e.minBars+" barras ou mais"}: ${e.operacoes} operações, acerto ${e.acerto===null?"-":br(e.acerto,0)}%, R$ 50 viraram R$ ${br(e.finalComConversao)} (${br(e.retornoPct,1)}%), maior queda de ${br(e.quedaMaxima,0)}% e até ${e.maiorSequenciaDePerdas} perdas seguidas.</div>`).join("");
+    }
+    h+=`<p class="sub" style="margin-top:10px">Cuidado: são 16 combinações, então uma pode parecer boa por sorte, e a carteira tem uma operação por vez (poucas operações dão resultados muito sensíveis a uma ou duas). Meta pequena corta os ganhos grandes e deixa as perdas inteiras, e um filtro de barras mais alto reduz o número de operações. O que vale é se o resultado melhora de forma consistente, e depois confirmar com as operações-sombra.</p>`;
+    $("forca").innerHTML=h;
   }
   if(sv){
     const cap=50,g=sv.groups,a=g.A_todas_inclusive_as_que_sairam,b=g.B_so_as_que_negociam_hoje;

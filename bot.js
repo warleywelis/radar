@@ -69,7 +69,7 @@ function newTrade(s, now, source, rule) {
   return {
     id: now + Math.random(), sym: s.sym, base: s.base, time: now, exp: now + C.days * DAY, entry, cap: C.cap, fee: C.fee, slip: C.slip,
     vr: s.vr, stopPct: s.stopPct, tgt: semMeta ? null : C.tgt, stopP: entry * (1 - s.stopPct / 100), tgtP: semMeta ? 1e18 : entry * (1 + C.tgt / 100),
-    status: "aberta", cur: entry, source, rule, sigT: s.sigT, p: s.p ? s.p.map(r4) : undefined
+    status: "aberta", cur: entry, source, rule, sigT: s.sigT, p: s.p ? s.p.map(r4) : undefined, bars: s.bars
   };
 }
 
@@ -79,6 +79,7 @@ function newTrade(s, now, source, rule) {
   const SH = loadJson("data/shadow.json", { trades: [] });
   const PR = loadJson("data/predictions.json", { items: [] });
   const M = loadJson("data/model.json", null);
+  const FORCA = loadJson("data/forca.json", null); // pesos da força do sinal (5 barras), criados pelo fluxo "forca"
   const msgs = [];
 
   // 1) Conferir operações abertas (principal e sombra)
@@ -129,10 +130,16 @@ function newTrade(s, now, source, rule) {
       const row = { sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice };
       const m = evalMomentum(cs);
       if (m) { row.mom = m.sig; row.vr = m.vr; row.sigT = m.t; row.atr = m.atr; row.stopPct = Math.min(Math.max(C.k * m.atr, 4), C.maxl); }
-      if (M) {
-        const f = ML.features(cs, cs.length - 2, bctx);
-        if (f) {
-          row.p = ML.predict(M, f.x); row.x = f.x; row.a = f.a; row.sigT = cs[cs.length - 2].t;
+      const f = ML.features(cs, cs.length - 2, bctx);
+      if (f) {
+        row.x = f.x; row.a = f.a; row.c = cs[cs.length - 2].c;
+        if (FORCA) { // força dinâmica: usa a distância entre o preço de agora e o fechamento do sinal
+          const gap = Math.max(-3, Math.min(3, (row.ask / row.c - 1) / (f.a / 100))), F = FORCA.modelo;
+          row.score = F.b + [...f.x, gap].reduce((sum, v, j) => sum + F.w[j] * (v - F.mu[j]) / F.sd[j], 0);
+          row.bars = 1 + F.edges.filter(e => row.score > e).length;
+        }
+        if (M) {
+          row.p = ML.predict(M, f.x); row.sigT = cs[cs.length - 2].t;
           row.stopPct = Math.min(Math.max(C.k * f.a, 4), C.maxl);
           if (row.vr === undefined) row.vr = 0;
         }
@@ -181,7 +188,7 @@ function newTrade(s, now, source, rule) {
   const top = scan.filter(r => r.p).sort((a, b) => b.p[0] - a.p[0]).slice(0, 8).map(r => ({ sym: r.sym, base: r.base, p: r.p.map(r4) }));
   save("data/last-run.json", {
     time: Date.now(), analyzed: cands.length, entered, rule: mainRule,
-    signals: momSignals.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask })),
+    signals: momSignals.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
     modelSignals: modelSignals.map(s => ({ sym: s.sym, base: s.base, p: s.p.map(r4), stopPct: s.stopPct })),
     modelTop: top,
     model: M ? { validated: M.validated, demoted: M.demoted, thr: M.thr, live: M.live, trainedAt: M.trainedAt, learned } : null,
