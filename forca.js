@@ -92,7 +92,7 @@ function sequential(sigs, minBars, rule) {
       const net = {}, endT = {};
       for (const [id, R] of Object.entries(EXITS)) { const tr = trade(cs, i, f.a, R.tgt); net[id] = tr.net; endT[id] = tr.endT; }
       const n7 = clamp((cs[i + H].c / cs[i + 1].o - 1) * 100 / f.a, -5, 8);
-      sigs.push({ sym, entryT: cs[i + 1].t, x: [...f.x, gap], n7, net, endT });
+      sigs.push({ sym, i, entryT: cs[i + 1].t, x: [...f.x, gap], n7, net, endT, c0: cs[i].c, af0: f.a / 100, stopPct: clamp(2 * f.a, 4, 15) });
       last = i + H; // sem sobreposição por moeda
     }
   }
@@ -120,6 +120,97 @@ function sequential(sigs, minBars, rule) {
   const strategy = [];
   for (const rule of ["meta3", "meta5", "meta10", "semMeta"]) for (const mb of [1, 3, 4, 5]) strategy.push(sequential(test, mb, rule));
 
+  // Regra dinâmica do usuário: a meta muda com as barras, 1 barra encerra, e opcionalmente troca para a moeda de melhor sinal
+  const idxOf = {}; for (const [sym, cs] of Object.entries(series)) idxOf[sym] = new Map(cs.map((c, i) => [c.t, i]));
+  const fcache = new Map();
+  const featAt = (sym, idx) => { const k = sym + ":" + idx; if (!fcache.has(k)) fcache.set(k, ML.features(series[sym], idx, bctx)); return fcache.get(k); };
+  const candBy = new Map(); for (const s of test) { if (!candBy.has(s.entryT)) candBy.set(s.entryT, []); candBy.get(s.entryT).push(s); }
+  // Barras para a operação ABERTA: modelo próprio de "continuação", treinado só com o período antigo.
+  // (A nota do sinal foi feita para o dia do sinal; nos dias seguintes ela cairia sempre, por isso precisa de calibração própria.)
+  const makeSamples = list => {
+    const out = [];
+    for (const s of list) {
+      const cs = series[s.sym];
+      for (let e = s.i + 2; e <= s.i + H; e++) {
+        const f = featAt(s.sym, e - 1);
+        if (!f) continue;
+        const gap = clamp((cs[e].o / s.c0 - 1) / s.af0, -3, 3), left = (s.i + H - e + 1) / H, ret = (cs[s.i + H].c / cs[e].o - 1) * 100;
+        out.push({ x: [...f.x, gap, left], y: clamp(ret / (s.af0 * 100), -5, 8), ret });
+      }
+    }
+    return out;
+  };
+  const trainS = makeSamples(train), testS = makeSamples(test);
+  const Mc = ridge(trainS.map(r => r.x), trainS.map(r => r.y), 20);
+  const edgesC = [0.2, 0.4, 0.6, 0.8].map(q => quant(trainS.map(r => scoreOf(Mc, r.x)), q));
+  const contLevels = [1, 2, 3, 4, 5].map(L => {
+    const g = testS.filter(r => barsOf(edgesC, scoreOf(Mc, r.x)) === L);
+    return { nivel: L, n: g.length, y: st(g.map(r => r.y)), ret: st(g.map(r => r.ret)) };
+  });
+  const contMeans = contLevels.filter(l => l.y.mean !== null).map(l => l.y.mean);
+  const contCrescente = contMeans.every((v, i) => i === 0 || v >= contMeans[i - 1] - 1e-9);
+  const tStart = test[0].entryT, tEnd = test[test.length - 1].entryT + (H + 1) * DAY;
+  const byScore = (a, b) => b.score - a.score;
+  function runDynamic(V) {
+    let eq = 1, peak = 1, dd = 0, pos = null, n = 0, w = 0, run = 0, worst = 0, hold = 0, sumNet = 0; const why = {};
+    const close = (px, reason) => {
+      const net = (px / pos.entry - 1) * 100 - 2 * FEE;
+      eq *= 1 + net / 100; sumNet += net; n++; hold += pos.days; if (net > 0) { w++; run = 0; } else { run++; worst = Math.max(worst, run); }
+      peak = Math.max(peak, eq); dd = Math.max(dd, 1 - eq / peak); why[reason] = (why[reason] || 0) + 1; pos = null;
+    };
+    const intraday = (cs, idx, bars, isEntry) => {
+      const o = cs[idx].o, h = cs[idx].h, l = cs[idx].l, c = cs[idx].c, tp = V.target(bars), tgtP = tp ? pos.entry * (1 + tp / 100) : null;
+      if (!isEntry) {
+        if (o <= pos.stopP) { close(o * (1 - SLIP / 100), "stop"); return true; }
+        if (tgtP && o >= tgtP) { close(o, "meta"); return true; }
+      }
+      if (l <= pos.stopP) { close(pos.stopP * (1 - SLIP / 100), "stop"); return true; }
+      if (tgtP && h >= tgtP) { close(tgtP, "meta"); return true; }
+      pos.days++; pos.last = c;
+      if (pos.days >= H) { close(c * (1 - SLIP / 100), "prazo"); return true; }
+      return false;
+    };
+    for (let d = tStart; d <= tEnd; d += DAY) {
+      let canEnter = true;
+      if (pos) {
+        const cs = series[pos.sym], idx = idxOf[pos.sym].get(d);
+        if (idx === undefined) { close(pos.last * (1 - SLIP / 100), "sem dados"); }
+        else {
+          const f = featAt(pos.sym, idx - 1);
+          let bars = pos.bars;
+          if (f) bars = barsOf(edgesC, scoreOf(Mc, [...f.x, clamp((cs[idx].o / pos.c0 - 1) / pos.af0, -3, 3), (H - pos.days) / H]));
+          let closedAtOpen = false;
+          if (V.exit1 && bars === 1) { close(cs[idx].o * (1 - SLIP / 100), "1 barra"); closedAtOpen = true; }
+          else if (V.rotate && bars <= 2) {
+            const alt = (candBy.get(d) || []).filter(x => x.sym !== pos.sym && x.bars >= 3 && x.bars > bars).sort(byScore)[0];
+            if (alt) { close(cs[idx].o * (1 - SLIP / 100), "troca de moeda"); closedAtOpen = true; }
+          }
+          if (!closedAtOpen && intraday(cs, idx, bars, false)) canEnter = false;
+        }
+      }
+      if (!pos && canEnter) {
+        const c = (candBy.get(d) || []).filter(x => x.bars >= 3).sort(byScore)[0];
+        if (c) {
+          const cs = series[c.sym], idx = idxOf[c.sym].get(d);
+          if (idx !== undefined) {
+            const entry = cs[idx].o * (1 + SLIP / 100);
+            pos = { sym: c.sym, entry, stopP: entry * (1 - c.stopPct / 100), c0: c.c0, af0: c.af0, days: 0, bars: c.bars, last: cs[idx].o };
+            intraday(cs, idx, c.bars, true);
+          }
+        }
+      }
+    }
+    if (pos) close(pos.last * (1 - SLIP / 100), "aberta no fim");
+    const final = 50 * eq * (1 - CONV / 100) ** 2;
+    return { id: V.id, nome: V.nome, operacoes: n, acerto: n ? w / n * 100 : null, mediaPorOperacao: n ? sumNet / n : null, diasMedios: n ? hold / n : null, finalComConversao: final, retornoPct: (final / 50 - 1) * 100, quedaMaxima: dd * 100, maiorSequenciaDePerdas: worst, motivos: why };
+  }
+  const dinamica = [
+    { id: "atual", nome: "Meta fixa de 10% (a atual), entrando só com 3 barras ou mais", target: () => 10 },
+    { id: "sem", nome: "Sem meta (só stop e prazo de 7 dias), entrando só com 3 barras ou mais", target: () => null },
+    { id: "dinamica", nome: "Sua regra: meta de 10% com 5 barras, 5% com 3 a 4, 3% com 2, e encerra com 1 barra", target: b => b >= 5 ? 10 : b >= 3 ? 5 : 3, exit1: true },
+    { id: "troca", nome: "Sua regra + troca para a moeda de melhor sinal quando a atual cai para 2 barras ou menos", target: b => b >= 5 ? 10 : b >= 3 ? 5 : 3, exit1: true, rotate: true }
+  ].map(runDynamic);
+
   // Modelo final (todos os sinais) para uso do robô e da página
   const Mf = ridge(sigs.map(s => s.x), sigs.map(s => s.n7), 20);
   const edgesF = [0.2, 0.4, 0.6, 0.8].map(q => quant(sigs.map(s => scoreOf(Mf, s.x)), q));
@@ -128,12 +219,15 @@ function sequential(sigs, minBars, rule) {
     modelo: { w: Mf.w.map(v => ML.round(v)), b: ML.round(Mf.b), mu: Mf.mu.map(v => ML.round(v)), sd: Mf.sd.map(v => ML.round(v)), edges: edgesF.map(v => ML.round(v)) },
     periodo: { sinais: sigs.length, treino: train.length, teste: test.length, de: test[0].entryT, ate: test[test.length - 1].entryT },
     calibracao: { niveis: levels, todos: all, n7Crescente: increasing(m7), semMetaCrescente: increasing(mSem) },
-    estrategia: strategy,
+    estrategia: strategy, dinamica,
+    continuacao: { niveis: contLevels, crescente: contCrescente, modelo: { w: Mc.w.map(v => ML.round(v)), b: ML.round(Mc.b), mu: Mc.mu.map(v => ML.round(v)), sd: Mc.sd.map(v => ML.round(v)), edges: edgesC.map(v => ML.round(v)) } },
     aviso: "As barras valem apenas se o resultado melhorar de forma consistente de 1 para 5 barras no período de teste, que não foi usado para criar as barras."
   };
   fs.mkdirSync("data", { recursive: true });
   fs.writeFileSync("data/forca.json", JSON.stringify(out));
   console.log("Níveis (teste):", levels.map(l => `${l.nivel}b n=${l.n} n7=${l.n7.mean && l.n7.mean.toFixed(2)} semMeta=${l.semMeta.mean && l.semMeta.mean.toFixed(2)}%`).join(" | "));
   console.log("Crescente (n7):", out.calibracao.n7Crescente, "| sem meta:", out.calibracao.semMetaCrescente);
+  console.log("Barras da operação aberta (teste): crescente =", contCrescente, "|", contLevels.map(l => `${l.nivel}b n=${l.n} y=${l.y.mean && l.y.mean.toFixed(2)}`).join(" | "));
+  for (const d of dinamica) console.log(`DINÂMICA ${d.id}: ${d.operacoes} ops, acerto ${d.acerto && d.acerto.toFixed(0)}%, média ${d.mediaPorOperacao && d.mediaPorOperacao.toFixed(2)}%, final R$ ${d.finalComConversao.toFixed(2)}, queda máx ${d.quedaMaxima.toFixed(0)}%, motivos ${JSON.stringify(d.motivos)}`);
   for (const s of strategy) console.log(`${s.regra} / ${s.minBars}+ barras: ${s.operacoes} ops, acerto ${s.acerto && s.acerto.toFixed(0)}%, final R$ ${s.finalComConversao.toFixed(2)}, queda máx ${s.quedaMaxima.toFixed(0)}%`);
 })().catch(e => { console.error(e); process.exit(1); });
