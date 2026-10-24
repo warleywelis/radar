@@ -6,7 +6,7 @@ const ML = require("./ml.js");
 const BASE = "https://data-api.binance.vision";
 const C = { cap: 50, tgt: 10, days: 7, vm: 2, k: 2, maxl: 15, minVol: 5e6, fee: 0.075, slip: 0.1, top: 60, L: 20 };
 const DAY = 864e5;
-const SKIP = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "EUR", "TRY", "BRL", "AEUR", "USD1", "XUSD", "PAXG", "USDS"]);
+const SKIP = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "EUR", "TRY", "BRL", "AEUR", "USD1", "XUSD", "PAXG", "USDS", "BFUSD", "RLUSD", "USDE", "USDD", "PYUSD", "USD0", "EURI", "XAUT", "U"]);
 const whyTxt = { stop: "saiu no stop", meta: "saiu na meta", tempo: "saiu pelo prazo" };
 
 async function get(path) {
@@ -52,12 +52,12 @@ async function resolve(t) {
   if (Date.now() >= t.exp) return fin(t, (last || t.entry) * (1 - t.slip / 100), "tempo", t.exp);
   t.cur = last || t.entry;
 }
-function evalMomentum(cs) {
-  const i = cs.length - 2;
+function evalMomentum(cs, i = cs.length - 2) {
   if (i < 35) return null;
   let mh = 0, sv = 0;
   for (let j = i - C.L; j < i; j++) { if (cs[j].h > mh) mh = cs[j].h; sv += cs[j].v; }
   const atr = ML.atrPctAt(cs, i), vr = sv > 0 ? cs[i].v / (sv / C.L) : 0;
+  if (!atr || atr < ML.MIN_ATR) return null; // ignora stablecoins e ativos atrelados
   return { sig: cs[i].c > mh && vr >= C.vm, vr, atr, t: cs[i].t };
 }
 async function daily(sym) {
@@ -121,7 +121,7 @@ function newTrade(s, now, source, rule) {
   }).sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, C.top);
   const bctx = ML.btcContext(await daily("BTCUSDT"));
 
-  const scan = [];
+  const scan = [], sigs = []; // sigs = sinais de momentum nos últimos 3 candles fechados (janela de entrada)
   for (let i = 0; i < cands.length; i += 10) {
     const batch = await Promise.all(cands.slice(i, i + 10).map(x => daily(x.symbol).catch(() => null)));
     batch.forEach((cs, j) => {
@@ -145,6 +145,21 @@ function newTrade(s, now, source, rule) {
         }
       }
       scan.push(row);
+      for (let off = 2; off <= 4; off++) { // hoje (0), ontem (1) e anteontem (2); a força é recalculada com o preço de agora
+        const i = cs.length - off, m2 = evalMomentum(cs, i);
+        if (!m2 || !m2.sig) continue;
+        const f2 = ML.features(cs, i, bctx);
+        const sg = { sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice, sigT: cs[i].t, vr: m2.vr, atr: m2.atr, c: cs[i].c, age: off - 2, stopPct: Math.min(Math.max(C.k * m2.atr, 4), C.maxl) };
+        if (f2) {
+          sg.x = f2.x; sg.a = f2.a;
+          if (FORCA) {
+            const gap = Math.max(-3, Math.min(3, (sg.ask / sg.c - 1) / (f2.a / 100))), F = FORCA.modelo;
+            sg.score = F.b + [...f2.x, gap].reduce((sum, v, j) => sum + F.w[j] * (v - F.mu[j]) / F.sd[j], 0);
+            sg.bars = 1 + F.edges.filter(e => sg.score > e).length;
+          }
+        }
+        sigs.push(sg);
+      }
     });
   }
 
@@ -157,17 +172,24 @@ function newTrade(s, now, source, rule) {
   }
 
   // 5) Sinais
-  const momSignals = scan.filter(r => r.mom).sort((a, b) => b.vr - a.vr);
+  const momSignals = sigs.filter(g => g.age === 0).sort((a, b) => b.vr - a.vr); // regra original: só o último candle fechado
   const modelSignals = M && M.thr !== null ? scan.filter(r => r.p && r.p[0] >= M.thr).sort((a, b) => b.p[0] - a.p[0]) : [];
+  const goodSignals = FORCA ? sigs.filter(g => g.bars >= 3).sort((a, b) => b.score - a.score) : []; // bom sinal = 3 barras ou mais, em qualquer dia da janela
+  const sep = FORCA && FORCA.calibracao && FORCA.calibracao.separacao && FORCA.calibracao.separacao.semMeta;
+  const useBars = !!(sep && sep.z >= 3 && FORCA.calibracao.rho7 > 0); // só filtra por barras se o teste provou que as barras separam bons e ruins
   const useModel = !!(M && M.validated && !M.demoted);
-  const mainRule = useModel ? "modelo" : "momentum";
-  const mainSignals = useModel ? modelSignals : momSignals;
+  const mainRule = useModel ? "modelo" : useBars ? "momentum-barras" : "momentum";
+  const mainSignals = useModel ? modelSignals : useBars ? goodSignals : momSignals;
 
   // Operações-sombra: guardam o resultado de TODOS os sinais de cada regra, separadas da operação principal
   const now0 = Date.now();
-  for (const [rule, list] of [["momentum", momSignals], ["momentum-sem-meta", momSignals], ["modelo", modelSignals]]) {
+  let created = 0;
+  for (const [rule, list] of [["momentum", momSignals], ["momentum-sem-meta", momSignals], ["modelo", modelSignals], ["barras3-janela", goodSignals]]) {
     for (const sg of list) {
-      if (!SH.trades.some(t => t.sym === sg.sym && t.sigT === sg.sigT && (t.rule || "momentum") === rule)) SH.trades.push(newTrade(sg, now0, "sombra", rule));
+      if (!SH.trades.some(t => t.sym === sg.sym && t.sigT === sg.sigT && (t.rule || "momentum") === rule)) {
+        SH.trades.push(newTrade(sg, now0, "sombra", rule));
+        if (rule === "barras3-janela") { created++; msgs.push(`Bom sinal: ${sg.base}/USDT com ${sg.bars} barras de força (${sg.age === 0 ? "sinal de hoje" : `sinal de ${sg.age} ${sg.age === 1 ? "dia" : "dias"} atrás`}).`); }
+      }
     }
   }
   let entered = null;
@@ -177,8 +199,6 @@ function newTrade(s, now, source, rule) {
     S.trades.push(newTrade(sg, Date.now(), "nuvem", mainRule));
     entered = sg.sym;
     msgs.push(`Nova operação simulada (${mainRule}): ${sg.base}/USDT${sg.p ? `, chance de alta ${(sg.p[0] * 100).toFixed(0)}%` : ""}. Stop em ${money(-sg.stopPct)}, meta em ${money(C.tgt)}.`);
-  } else if (mainSignals.length) {
-    msgs.push(`Sinais hoje (${mainRule}): ${mainSignals.map(x => x.base).join(", ")}. Já há uma operação aberta.`);
   }
 
   save("data/trades.json", S);
@@ -188,13 +208,14 @@ function newTrade(s, now, source, rule) {
   const top = scan.filter(r => r.p).sort((a, b) => b.p[0] - a.p[0]).slice(0, 8).map(r => ({ sym: r.sym, base: r.base, p: r.p.map(r4) }));
   save("data/last-run.json", {
     time: Date.now(), analyzed: cands.length, entered, rule: mainRule,
-    signals: momSignals.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
+    regraEntrada: useModel ? "previsão do modelo" : useBars ? "3 barras ou mais, em até 3 dias do sinal" : "sinal do último candle fechado (o filtro de barras ainda não foi comprovado)",
+    signals: sigs.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
     modelSignals: modelSignals.map(s => ({ sym: s.sym, base: s.base, p: s.p.map(r4), stopPct: s.stopPct })),
     modelTop: top,
     model: M ? { validated: M.validated, demoted: M.demoted, thr: M.thr, live: M.live, trainedAt: M.trainedAt, learned } : null,
     shadowOpen: SH.trades.filter(t => t.status === "aberta").length, shadowClosed: SH.trades.filter(t => t.status === "fechada").length,
     params: C
   });
-  console.log(`Analisadas ${cands.length} moedas. Regra: ${mainRule}. Momentum: ${momSignals.length} sinais. Modelo: ${modelSignals.length} sinais. Aprendeu com ${learned} resultados. Entrada: ${entered || "nenhuma"}.`);
+  console.log(`Analisadas ${cands.length} moedas. Regra: ${mainRule}. Momentum: ${momSignals.length} sinais, janela de 3 dias: ${sigs.length}, bons (3+ barras): ${goodSignals.length}. Modelo: ${modelSignals.length} sinais. Aprendeu com ${learned} resultados. Entrada: ${entered || "nenhuma"}.`);
   await tg(msgs.join("\n"));
 })().catch(e => { console.error(e); process.exit(1); });

@@ -96,16 +96,17 @@ async function main(){
   const [tr,last,sv,shd,mdl,sd,fc]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json")]);
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
-    $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}.`;
+    $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}. Regra de entrada: ${last.regraEntrada||"sinal do último candle fechado"}. O robô confere o mercado de hora em hora.`;
     const pr=await Promise.all(last.signals.map(s=>price(s.sym)));
-    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const k=liveBars(fc,s,pr[i]);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
+    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const k=liveBars(fc,s,pr[i]);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
   }
   const trades=(tr&&tr.trades)||[],op=trades.filter(t=>t.status==="aberta"),cl=trades.filter(t=>t.status==="fechada");
   if(op.length){
     const rows=[];
     for(const t of op){
       const p=await price(t.sym),cur=p||t.cur,fl=(cur/t.entry-1)*100-2*t.fee,d=Math.max(0,(t.exp-Date.now())/DAY);
-      rows.push(`<li><div class="top"><b>${t.base}/USDT</b><span class="${fl>=0?"up":"dn"}">${money(fl,t.cap)}</span></div><div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.</div>${chartBtn(t.sym)}</li>`);
+      const mv=(cur/t.entry-1)*100,hit=mv<=-t.stopPct?`O stop de ${money(-t.stopPct,t.cap)} já foi atingido. O valor acima é só o preço de agora: o robô vai registrar a saída no stop na próxima execução.`:(t.tgt&&mv>=t.tgt?`A meta de ${money(t.tgt,t.cap)} já foi atingida. O valor acima é só o preço de agora: o robô vai registrar a saída na meta na próxima execução.`:"");
+      rows.push(`<li><div class="top"><b>${t.base}/USDT</b><span class="${fl>=0?"up":"dn"}">${money(fl,t.cap)}</span></div><div class="sub">Entrada ${when(t.time)} a ${Number(t.entry.toPrecision(5))} USDT. Stop em ${money(-t.stopPct,t.cap)}, meta em ${money(t.tgt,t.cap)}. Restam ${br(d,1)} dias.${t.bars?` Força na entrada: ${barsHtml(t.bars)}${t.bars} de 5.`:""}</div>${hit?`<div class="sub dn">${hit}</div>`:""}${chartBtn(t.sym)}</li>`);
     }
     $("open").innerHTML=rows.join("");
   }
@@ -126,7 +127,7 @@ async function main(){
     return s;
   };
   if(sh.length){
-    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
+    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Barras 3+ (janela de 3 dias):</b> ${agg(sh.filter(t=>t.rule==="barras3-janela"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
   }
   if(mdl&&mdl.report){
     const r=mdl.report,t=r.teste,cap=50,m=(last&&last.model)||{validated:mdl.validated,demoted:mdl.demoted,live:mdl.live};
@@ -156,7 +157,13 @@ async function main(){
   if(fc&&fc.calibracao){
     const cap=50,cb=fc.calibracao,pf=fc.periodo,f=(s)=>s&&s.n&&s.mean!==null?money(s.mean,cap):"sem dados";
     let h=`<p class="sub">Calculada em ${when(fc.generated)} com ${pf.sinais} sinais de momentum no histórico (inclusive moedas que saíram). As barras foram criadas com os 60% mais antigos e testadas nos 40% mais recentes (${pf.teste} sinais), que não entraram na criação. A força de cada sinal combina volume, quão acima da máxima o preço fechou, tendência da moeda, estado do Bitcoin e se o preço já fugiu do ponto do sinal, e muda com o preço.</p>`;
-    h+=`<p><b>${cb.n7Crescente&&cb.semMetaCrescente?"As barras fazem sentido: o resultado melhora de 1 para 5 barras.":cb.n7Crescente||cb.semMetaCrescente?"As barras fazem sentido só em parte: o resultado nem sempre melhora de uma barra para a seguinte.":"As barras não fizeram sentido no teste: mais barras não significou melhor resultado."}</b></p>`;
+    const sp=cb.separacao&&cb.separacao.semMeta;
+    if(sp){
+      const ok=sp.z>=3,mono=cb.n7Crescente&&cb.semMetaCrescente;
+      h+=`<p><b>${ok?"As barras separam sinais bons dos ruins":"Não dá para afirmar que as barras separam sinais bons dos ruins"}.</b> Sem meta, os sinais de 3 a 5 barras renderam em média ${f(sp.altas)} e os de 1 a 2 barras ${f(sp.baixas)}. Diferença de ${money(sp.diff,cap)} (z = ${br(sp.z,1)}, o mínimo é 3). ${mono?"O resultado também melhora de forma regular de 1 para 5 barras.":ok?"Mas o resultado não melhora de forma regular entre 3, 4 e 5 barras, então as barras servem para filtrar (evitar 1 e 2 barras) e não para ajustar a meta.":"E o resultado também não melhora de forma regular de 1 para 5 barras."}</p>`;
+    }else{
+      h+=`<p><b>${cb.n7Crescente&&cb.semMetaCrescente?"As barras fazem sentido: o resultado melhora de 1 para 5 barras.":"As barras não fizeram sentido no teste."}</b></p>`;
+    }
     h+=cb.niveis.map(l=>`<div class="row"><div class="top"><span>${barsHtml(l.nivel)}<b>${l.nivel} ${l.nivel===1?"barra":"barras"}</b></span><span class="sub">${l.n} sinais</span></div><div class="sub">Sem meta (só stop e prazo de 7 dias): média ${f(l.semMeta)}${l.semMeta&&l.semMeta.se?` ± ${money(2*l.semMeta.se,cap)}`:""}, lucro em ${l.semMeta&&l.semMeta.win!==null?br(l.semMeta.win,0):"-"}%. Meta 10%: média ${f(l.meta10)}, lucro em ${l.meta10&&l.meta10.win!==null?br(l.meta10.win,0):"-"}%. Meta 5%: média ${f(l.meta5)}, lucro em ${l.meta5&&l.meta5.win!==null?br(l.meta5.win,0):"-"}%.</div></div>`).join("");
     h+=`<p style="margin-top:12px"><b>A sua ideia, testada na carteira de R$ 50:</b> comprar, fechar quando atingir a meta e reabrir no melhor sinal com barras suficientes, uma operação por vez, só no período de teste, com custo de conversão (${br(fc.conversao,1)}% por conversão, só no começo e no fim).</p>`;
     const rules=[...new Set(fc.estrategia.map(e=>e.regra))];
