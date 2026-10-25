@@ -1,0 +1,24 @@
+name: pesquisa
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * 0"
+permissions:
+  contents: write
+concurrency:
+  group: pesquisa
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node pesquisa.js
+      - run: |
+          git config user.name "radar-bot"
+          git config user.email "radar-bot@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "pesquisa" && git pull --rebase && git push)
