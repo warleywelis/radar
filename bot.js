@@ -153,7 +153,8 @@ function newTrade(s, now, source, rule) {
         if (f2) {
           sg.x = f2.x; sg.a = f2.a;
           if (FORCA) {
-            const gap = Math.max(-3, Math.min(3, (sg.ask / sg.c - 1) / (f2.a / 100))), F = FORCA.modelo;
+            const rawGap = (sg.ask / sg.c - 1) / (f2.a / 100), gap = Math.max(-3, Math.min(3, rawGap)), F = FORCA.modelo;
+            sg.gap = rawGap; sg.stretched = rawGap > 1.5; // esticado: o preço já fugiu muito do ponto do sinal (fora do que foi testado)
             sg.score = F.b + [...f2.x, gap].reduce((sum, v, j) => sum + F.w[j] * (v - F.mu[j]) / F.sd[j], 0);
             sg.bars = 1 + F.edges.filter(e => sg.score > e).length;
           }
@@ -174,7 +175,7 @@ function newTrade(s, now, source, rule) {
   // 5) Sinais
   const momSignals = sigs.filter(g => g.age === 0).sort((a, b) => b.vr - a.vr); // regra original: só o último candle fechado
   const modelSignals = M && M.thr !== null ? scan.filter(r => r.p && r.p[0] >= M.thr).sort((a, b) => b.p[0] - a.p[0]) : [];
-  const goodSignals = FORCA ? sigs.filter(g => g.bars >= 3).sort((a, b) => b.score - a.score) : []; // bom sinal = 3 barras ou mais, em qualquer dia da janela
+  const goodSignals = FORCA ? sigs.filter(g => g.bars >= 3 && !g.stretched).sort((a, b) => b.score - a.score) : []; // bom sinal = 3 barras ou mais, em qualquer dia da janela
   const sep = FORCA && FORCA.calibracao && FORCA.calibracao.separacao && FORCA.calibracao.separacao.semMeta;
   const useBars = !!(sep && sep.z >= 3 && FORCA.calibracao.rho7 > 0); // só filtra por barras se o teste provou que as barras separam bons e ruins
   const useModel = !!(M && M.validated && !M.demoted);
@@ -207,9 +208,9 @@ function newTrade(s, now, source, rule) {
   if (M) save("data/model.json", M);
   const top = scan.filter(r => r.p).sort((a, b) => b.p[0] - a.p[0]).slice(0, 8).map(r => ({ sym: r.sym, base: r.base, p: r.p.map(r4) }));
   save("data/last-run.json", {
-    time: Date.now(), analyzed: cands.length, entered, rule: mainRule,
+    time: Date.now(), versoes: { bot: "2026-10-24", ml: ML.VERSAO || null, minAtr: ML.MIN_ATR || null }, analyzed: cands.length, entered, rule: mainRule,
     regraEntrada: useModel ? "previsão do modelo" : useBars ? "3 barras ou mais, em até 3 dias do sinal" : "sinal do último candle fechado (o filtro de barras ainda não foi comprovado)",
-    signals: sigs.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
+    signals: sigs.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, gap: s.gap === undefined ? undefined : r4(s.gap), stretched: s.stretched, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
     modelSignals: modelSignals.map(s => ({ sym: s.sym, base: s.base, p: s.p.map(r4), stopPct: s.stopPct })),
     modelTop: top,
     model: M ? { validated: M.validated, demoted: M.demoted, thr: M.thr, live: M.live, trainedAt: M.trainedAt, learned } : null,

@@ -29,6 +29,7 @@ a{color:var(--ac)}
 <p class="mut">Operações de mentira registradas sozinhas, todo dia, pelo GitHub. A regra é a do simulador de momentum: rompimento da máxima de 20 dias com volume forte, meta de 10% e prazo de 7 dias, uma operação por vez.</p>
 
 <p id="status" class="mut">Carregando...</p>
+<div id="aviso" class="sub dn" style="margin:0 0 10px"></div>
 <h2>Operação aberta</h2>
 <div class="panel"><ul id="open"><li class="sub">Nenhuma.</li></ul></div>
 <h2>Sinais da última execução</h2>
@@ -93,12 +94,19 @@ function fmtStats(s,cap){
   return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
 }
 async function main(){
-  const [tr,last,sv,shd,mdl,sd,fc]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json")]);
+  const [tr,last,sv,shd,mdl,sd,fc,pq]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json"),raw("pesquisa.json")]);
+  const av=[];
+  const velho=[mdl&&mdl.report&&!mdl.report.minAtr?"modelo":null,sd&&!sd.minAtr?"regras de saída":null,fc&&!fc.minAtr?"força do sinal":null].filter(Boolean);
+  if(velho.length)av.push(`Atenção: ${velho.join(", ")} ${velho.length>1?"foram gerados":"foi gerado"} com a versão antiga, sem o filtro de moedas atreladas ao dólar. Envie o ml.js e o pesquisa.js novos e rode o fluxo "pesquisa".`);
+  if(last&&last.versoes&&pq&&pq.versoes&&last.versoes.ml!==pq.versoes.ml)av.push(`O robô usa o ml.js de versão ${last.versoes.ml||"antiga"} e a última pesquisa usou a versão ${pq.versoes.ml||"antiga"}. Os dois precisam ser a mesma.`);
+  if(last&&!last.versoes)av.push("O robô ainda está na versão antiga do bot.js. Envie o bot.js novo ao repositório.");
+  if(pq&&pq.erros&&Object.keys(pq.erros).length)av.push(`A última pesquisa teve erro em: ${Object.entries(pq.erros).map(([k,v])=>k+" ("+v+")").join("; ")}.`);
+  if(av.length)$("aviso").innerHTML=av.join("<br>");
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
     $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}. Regra de entrada: ${last.regraEntrada||"sinal do último candle fechado"}. O robô confere o mercado de hora em hora.`;
     const pr=await Promise.all(last.signals.map(s=>price(s.sym)));
-    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const k=liveBars(fc,s,pr[i]);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
+    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const g=(s.a&&s.c)?((pr[i]||s.ask)/s.c-1)/(s.a/100):0,est=g>1.5;let k=liveBars(fc,s,pr[i]);if(est&&k)k=Math.min(k,2);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}${est?` <b class="dn">Esticado: o preço já subiu ${br(g,1)} oscilações desde o sinal, e entrar agora seria correr atrás do preço (fora do que os testes cobrem).</b>`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
   }
   const trades=(tr&&tr.trades)||[],op=trades.filter(t=>t.status==="aberta"),cl=trades.filter(t=>t.status==="fechada");
   if(op.length){

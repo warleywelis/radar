@@ -1,6 +1,8 @@
 // ml.js: modelo de previsão dos 3 caminhos do preço em 7 dias (0 = alta, 1 = estabilidade, 2 = baixa).
 // Regressão logística multinomial (softmax) em JavaScript puro, sem dependências.
 const H = 7, NF = 12;
+const VERSAO = "2026-10-24";
+const MIN_ATR = 1.2; // oscilação diária mínima (%): exclui stablecoins e ativos atrelados, em que "1 oscilação" é só ruído
 const FEATURES = ["ret1", "ret3", "ret7", "ret20", "dist20h", "volume", "tendencia", "inclinacao50", "oscilacao", "corpo", "btc7", "btcTendencia"];
 const CLASSES = ["alta", "estabilidade", "baixa"];
 
@@ -30,7 +32,7 @@ function btcContext(btc) {
 function features(cs, i, bctx) {
   if (i < 56) return null;
   const a = atrPctAt(cs, i);
-  if (!a) return null;
+  if (!a || a < MIN_ATR) return null;
   const af = a / 100, c = cs[i].c;
   let mh = 0, sv = 0;
   for (let j = i - 20; j < i; j++) { if (cs[j].h > mh) mh = cs[j].h; sv += cs[j].v; }
@@ -121,4 +123,4 @@ const round = (v, d = 6) => Math.round(v * 10 ** d) / 10 ** d;
 function pack(M) {
   return { W: M.W.map(r => r.map(v => round(v))), b: M.b.map(v => round(v)), mu: M.mu.map(v => round(v)), sd: M.sd.map(v => round(v)) };
 }
-module.exports = { H, NF, FEATURES, CLASSES, atrPctAt, btcContext, features, label, tradeNet, newModel, predict, fit, sgd, logLoss, pack, round };
+module.exports = { VERSAO, MIN_ATR, H, NF, FEATURES, CLASSES, atrPctAt, btcContext, features, label, tradeNet, newModel, predict, fit, sgd, logLoss, pack, round };

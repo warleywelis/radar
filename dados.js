@@ -2,7 +2,7 @@
 const fs = require("fs"), os = require("os"), path = require("path");
 const { execFileSync } = require("child_process");
 const S3 = process.env.S3_BASE || "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision";
-const SKIP = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "EUR", "TRY", "BRL", "AEUR", "USD1", "XUSD", "PAXG", "USDS", "UST", "USTC"]);
+const SKIP = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "EUR", "TRY", "BRL", "AEUR", "USD1", "XUSD", "PAXG", "USDS", "UST", "USTC", "BFUSD", "RLUSD", "USDE", "USDD", "PYUSD", "USD0", "EURI", "XAUT", "U"]);
 
 async function fetchRetry(url, asBuffer) {
   let last;
