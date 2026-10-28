@@ -4,7 +4,7 @@
 const fs = require("fs");
 const ML = require("./ml.js");
 const BASE = "https://data-api.binance.vision";
-const C = { cap: 50, tgt: 10, days: 7, vm: 2, k: 2, maxl: 15, minVol: 5e6, fee: 0.075, slip: 0.1, top: 60, L: 20 };
+const C = { cap: 50, tgt: 10, days: 7, vm: 2, k: 2, maxl: 15, minVol: 5e6, fee: 0.075, slip: 0.1, top: 120, topShadow: 100, L: 20 };
 const DAY = 864e5;
 const SKIP = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "EUR", "TRY", "BRL", "AEUR", "USD1", "XUSD", "PAXG", "USDS", "BFUSD", "RLUSD", "USDE", "USDD", "PYUSD", "USD0", "EURI", "XAUT", "U"]);
 const whyTxt = { stop: "saiu no stop", meta: "saiu na meta", tempo: "saiu pelo prazo" };
@@ -62,7 +62,7 @@ function evalMomentum(cs, i = cs.length - 2) {
 }
 async function daily(sym) {
   const k = await get(`/api/v3/klines?symbol=${sym}&interval=1d&limit=70`);
-  return k.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+  return k.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5], q: +c[7] || 0 }));
 }
 function newTrade(s, now, source, rule) {
   const entry = s.ask * (1 + C.slip / 100), semMeta = rule === "momentum-sem-meta"; // sem meta: só stop e prazo (tgtP enorme, pois JSON não guarda Infinity)
@@ -78,8 +78,12 @@ function newTrade(s, now, source, rule) {
   const S = loadJson("data/trades.json", { trades: [] });
   const SH = loadJson("data/shadow.json", { trades: [] });
   const PR = loadJson("data/predictions.json", { items: [] });
-  const M = loadJson("data/model.json", null);
-  const FORCA = loadJson("data/forca.json", null); // pesos da força do sinal (5 barras), criados pelo fluxo "forca"
+  const M0 = loadJson("data/model.json", null);
+  const extraM = !!(M0 && M0.spec && M0.spec.extra);
+  const M = M0 && M0.mu && M0.mu.length === (extraM ? ML.NF_EXTRA : ML.NF) ? M0 : null; // modelo de outra versão do ml.js é ignorado até a pesquisa rodar de novo
+  const SPEC = (M && M.spec) || { topN: 60, minDias: 0, extra: false };
+  const FORCA0 = loadJson("data/forca.json", null);
+  const FORCA = FORCA0 && FORCA0.modelo && FORCA0.modelo.w.length === ML.NF + 1 ? FORCA0 : null; // pesos da força do sinal (5 barras), criados pelo fluxo "forca"
   const msgs = [];
 
   // 1) Conferir operações abertas (principal e sombra)
@@ -121,25 +125,39 @@ function newTrade(s, now, source, rule) {
   }).sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, C.top);
   const bctx = ML.btcContext(await daily("BTCUSDT"));
 
+  const cache = new Map();
+  for (let i = 0; i < cands.length; i += 10) {
+    const b = await Promise.all(cands.slice(i, i + 10).map(x => daily(x.symbol).catch(() => null)));
+    b.forEach((cs, j) => { if (cs && cs.length > 40) cache.set(cands[i + j].symbol, cs); });
+  }
+  const avgQ = (cs, end) => { let q = 0; for (let k = end - 29; k <= end; k++) q += cs[k].q; return q / 30; };
+  const rankAt = d => { const m = new Map(); [...cache.entries()].map(([s, cs]) => [s, avgQ(cs, cs.length - 2 - d)]).sort((a, b) => b[1] - a[1]).forEach(([s], k) => m.set(s, k + 1)); return m; };
+  const rankToday = rankAt(0), prev = [];
+  for (let d = 1; d <= (SPEC.minDias || 0); d++) prev.push(rankAt(d));
+  const persistOk = s => prev.every(m => (m.get(s) || 999) <= SPEC.topN); // moeda no ranking há pelo menos minDias dias
   const scan = [], sigs = []; // sigs = sinais de momentum nos últimos 3 candles fechados (janela de entrada)
   for (let i = 0; i < cands.length; i += 10) {
-    const batch = await Promise.all(cands.slice(i, i + 10).map(x => daily(x.symbol).catch(() => null)));
+    const batch = cands.slice(i, i + 10).map(x => cache.get(x.symbol) || null);
     batch.forEach((cs, j) => {
       const x = cands[i + j];
       if (!cs) return;
-      const row = { sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice };
+      const rk = rankToday.get(x.symbol) || 999, inUni = rk <= SPEC.topN && persistOk(x.symbol);
+      const row = { sym: x.symbol, base: x.symbol.slice(0, -4), ask: +x.askPrice, rank: rk, inUni };
       const m = evalMomentum(cs);
       if (m) { row.mom = m.sig; row.vr = m.vr; row.sigT = m.t; row.atr = m.atr; row.stopPct = Math.min(Math.max(C.k * m.atr, 4), C.maxl); }
       const f = ML.features(cs, cs.length - 2, bctx);
       if (f) {
         row.x = f.x; row.a = f.a; row.c = cs[cs.length - 2].c;
+        row.stretched = (row.ask / row.c - 1) / (f.a / 100) > 1.5; // esticado: o preço já fugiu do ponto do sinal
         if (FORCA) { // força dinâmica: usa a distância entre o preço de agora e o fechamento do sinal
           const gap = Math.max(-3, Math.min(3, (row.ask / row.c - 1) / (f.a / 100))), F = FORCA.modelo;
           row.score = F.b + [...f.x, gap].reduce((sum, v, j) => sum + F.w[j] * (v - F.mu[j]) / F.sd[j], 0);
           row.bars = 1 + F.edges.filter(e => row.score > e).length;
         }
         if (M) {
-          row.p = ML.predict(M, f.x); row.sigT = cs[cs.length - 2].t;
+          const fm = extraM ? ML.features(cs, cs.length - 2, bctx, true) : f;
+          if (fm) { row.p = ML.predict(M, fm.x); row.xm = fm.x; }
+          row.sigT = cs[cs.length - 2].t;
           row.stopPct = Math.min(Math.max(C.k * f.a, 4), C.maxl);
           if (row.vr === undefined) row.vr = 0;
         }
@@ -159,7 +177,7 @@ function newTrade(s, now, source, rule) {
             sg.bars = 1 + F.edges.filter(e => sg.score > e).length;
           }
         }
-        sigs.push(sg);
+        if (inUni) sigs.push(sg);
       }
     });
   }
@@ -168,24 +186,27 @@ function newTrade(s, now, source, rule) {
   if (M) {
     for (const r of scan) {
       if (r.p && !PR.items.some(it => it.sym === r.sym && it.t === r.sigT))
-        PR.items.push({ sym: r.sym, t: r.sigT, p: r.p.map(r4), x: r.x.map(r4), a: r4(r.a), m: M.trainedAt, done: false });
+        PR.items.push({ sym: r.sym, t: r.sigT, p: r.p.map(r4), x: (r.xm || r.x).map(r4), a: r4(r.a), m: M.trainedAt, done: false });
     }
   }
 
   // 5) Sinais
   const momSignals = sigs.filter(g => g.age === 0).sort((a, b) => b.vr - a.vr); // regra original: só o último candle fechado
-  const modelSignals = M && M.thr !== null ? scan.filter(r => r.p && r.p[0] >= M.thr).sort((a, b) => b.p[0] - a.p[0]) : [];
+  const modelAll = M && M.thr !== null ? scan.filter(r => r.p && r.p[0] >= M.thr && !r.stretched).sort((a, b) => b.p[0] - a.p[0]) : [];
+  const modelSignals = modelAll.filter(r => r.inUni); // regra principal: só o universo validado e nunca sinal esticado
+  const modelTop100 = modelAll.filter(r => r.rank > SPEC.topN && r.rank <= C.topShadow); // só acompanhamento: moedas fora do universo validado
   const goodSignals = FORCA ? sigs.filter(g => g.bars >= 3 && !g.stretched).sort((a, b) => b.score - a.score) : []; // bom sinal = 3 barras ou mais, em qualquer dia da janela
   const sep = FORCA && FORCA.calibracao && FORCA.calibracao.separacao && FORCA.calibracao.separacao.semMeta;
   const useBars = !!(sep && sep.z >= 3 && FORCA.calibracao.rho7 > 0); // só filtra por barras se o teste provou que as barras separam bons e ruins
+  const goodMain = goodSignals.filter(g => g.age === 0); // a janela de 3 dias só acompanha; a entrada principal usa o último candle fechado
   const useModel = !!(M && M.validated && !M.demoted);
   const mainRule = useModel ? "modelo" : useBars ? "momentum-barras" : "momentum";
-  const mainSignals = useModel ? modelSignals : useBars ? goodSignals : momSignals;
+  const mainSignals = useModel ? modelSignals : useBars ? goodMain : momSignals;
 
   // Operações-sombra: guardam o resultado de TODOS os sinais de cada regra, separadas da operação principal
   const now0 = Date.now();
   let created = 0;
-  for (const [rule, list] of [["momentum", momSignals], ["momentum-sem-meta", momSignals], ["modelo", modelSignals], ["barras3-janela", goodSignals]]) {
+  for (const [rule, list] of [["momentum", momSignals], ["momentum-sem-meta", momSignals], ["modelo", modelSignals], ["modelo-barras3", modelSignals.filter(r => r.bars >= 3)], ["modelo-momentum", modelSignals.filter(r => r.mom)], ["modelo-top100", modelTop100], ["barras3-janela", goodSignals]]) {
     for (const sg of list) {
       if (!SH.trades.some(t => t.sym === sg.sym && t.sigT === sg.sigT && (t.rule || "momentum") === rule)) {
         SH.trades.push(newTrade(sg, now0, "sombra", rule));
@@ -194,8 +215,10 @@ function newTrade(s, now, source, rule) {
     }
   }
   let entered = null;
+  const last3 = S.trades.filter(t => t.status === "fechada").sort((a, b) => a.end - b.end).slice(-3);
+  const pausaAte = last3.length === 3 && last3.every(t => t.why === "stop") && Date.now() < last3[2].end + 3 * DAY ? last3[2].end + 3 * DAY : null; // proteção: 3 stops seguidos pausam as entradas por 3 dias
   const fresh = mainSignals.filter(x => !S.trades.some(t => t.sym === x.sym && t.sigT === x.sigT));
-  if (!S.trades.some(t => t.status === "aberta") && fresh.length) {
+  if (!S.trades.some(t => t.status === "aberta") && fresh.length && !pausaAte) {
     const sg = fresh[0];
     S.trades.push(newTrade(sg, Date.now(), "nuvem", mainRule));
     entered = sg.sym;
@@ -208,7 +231,7 @@ function newTrade(s, now, source, rule) {
   if (M) save("data/model.json", M);
   const top = scan.filter(r => r.p).sort((a, b) => b.p[0] - a.p[0]).slice(0, 8).map(r => ({ sym: r.sym, base: r.base, p: r.p.map(r4) }));
   save("data/last-run.json", {
-    time: Date.now(), versoes: { bot: "2026-10-24", ml: ML.VERSAO || null, minAtr: ML.MIN_ATR || null }, analyzed: cands.length, entered, rule: mainRule,
+    time: Date.now(), versoes: { bot: "2026-10-24", ml: ML.VERSAO || null, minAtr: ML.MIN_ATR || null }, analyzed: cache.size, entered, rule: mainRule, spec: SPEC, pausaAte,
     regraEntrada: useModel ? "previsão do modelo" : useBars ? "3 barras ou mais, em até 3 dias do sinal" : "sinal do último candle fechado (o filtro de barras ainda não foi comprovado)",
     signals: sigs.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, gap: s.gap === undefined ? undefined : r4(s.gap), stretched: s.stretched, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
     modelSignals: modelSignals.map(s => ({ sym: s.sym, base: s.base, p: s.p.map(r4), stopPct: s.stopPct })),

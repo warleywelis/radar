@@ -16,7 +16,7 @@ button{font:inherit;padding:6px 12px;margin:8px 0 0;border-radius:8px;border:1px
 ul{list-style:none;margin:0;padding:0}
 li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .top{display:flex;justify-content:space-between;font-size:1.05rem;gap:8px}
-.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}
+.up{color:var(--up)}.dn{color:var(--dn)}.tv{margin-top:8px}.tvbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0}.tvbar button{margin:0}.tvopen{font-size:.9rem}
 .bars{display:inline-flex;align-items:flex-end;gap:2px;height:18px;vertical-align:middle;margin-right:6px}
 .bars i{display:block;width:5px;background:var(--line);border-radius:1px}.bars i.on{background:var(--ac)}
 .bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:8px}.bars i:nth-child(3){height:11px}.bars i:nth-child(4){height:15px}.bars i:nth-child(5){height:18px}.row{padding:8px 0;border-top:1px solid var(--line)}
@@ -66,22 +66,34 @@ async function price(sym){
   }
   return null;
 }
+const tvUrl=sym=>"https://www.tradingview.com/chart/?symbol="+encodeURIComponent("BINANCE:"+sym)+"&interval=D";
+function tvMount(host,sym,full){
+  const wrap=document.createElement("div");wrap.className="tradingview-widget-container";wrap.style.cssText="width:100%;height:"+(full?"100%":"380px");
+  const inner=document.createElement("div");inner.className="tradingview-widget-container__widget";inner.style.height="100%";wrap.appendChild(inner);
+  const sc=document.createElement("script");sc.src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";sc.async=true;
+  sc.text=JSON.stringify({autosize:true,symbol:"BINANCE:"+sym,interval:"D",timezone:"America/Sao_Paulo",theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light",style:"1",locale:"br",allow_symbol_change:!!full,hide_side_toolbar:!full,calendar:false,support_host:"https://www.tradingview.com"});
+  wrap.appendChild(sc);host.appendChild(wrap);
+}
 function showChart(box,sym){
   if(box.dataset.on){box.innerHTML="";box.dataset.on="";return;}
   box.dataset.on="1";
-  const wrap=document.createElement("div");wrap.className="tradingview-widget-container";wrap.style.height="380px";
-  const inner=document.createElement("div");inner.className="tradingview-widget-container__widget";inner.style.height="100%";
-  wrap.appendChild(inner);
-  const sc=document.createElement("script");sc.src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";sc.async=true;
-  sc.text=JSON.stringify({autosize:true,symbol:"BINANCE:"+sym,interval:"D",timezone:"America/Sao_Paulo",theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light",style:"1",locale:"br",allow_symbol_change:false,hide_side_toolbar:true,calendar:false,support_host:"https://www.tradingview.com"});
-  wrap.appendChild(sc);box.appendChild(wrap);
+  const bar=document.createElement("div");bar.className="tvbar";
+  bar.innerHTML=`<button class="tvfull" data-sym="${sym}">Tela cheia</button><a class="tvopen" href="${tvUrl(sym)}" target="_blank" rel="noopener">Abrir no TradingView (minha conta e meus scripts)</a>`;
+  box.appendChild(bar);tvMount(box,sym,false);
 }
-document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.chart");if(b)showChart(b.nextElementSibling,b.dataset.sym);});
+function openFull(sym){
+  const ov=document.createElement("div");ov.style.cssText="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;background:var(--bg)";
+  ov.innerHTML=`<div class="tvbar" style="padding:8px 12px"><button id="tvclose">Fechar</button><a class="tvopen" href="${tvUrl(sym)}" target="_blank" rel="noopener">Abrir no TradingView (minha conta e meus scripts)</a></div><div id="tvhost" style="flex:1;min-height:0"></div>`;
+  document.body.appendChild(ov);document.body.style.overflow="hidden";
+  tvMount(ov.querySelector("#tvhost"),sym,true);
+  ov.querySelector("#tvclose").onclick=()=>{ov.remove();document.body.style.overflow="";};
+}
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.chart");if(b)showChart(b.nextElementSibling,b.dataset.sym);const f=e.target.closest&&e.target.closest("button.tvfull");if(f)openFull(f.dataset.sym);});
 const barsHtml=k=>`<span class="bars" aria-label="força ${k} de 5">${[1,2,3,4,5].map(i=>`<i class="${i<=k?"on":""}"></i>`).join("")}</span>`;
 const forcaTxt=k=>k>=4?"forte":k===3?"média":"fraca";
 const clip3=v=>Math.max(-3,Math.min(3,v));
 function liveBars(fc,s,p){ // força dinâmica: recalcula com o preço de agora
-  if(!fc||!s.x||!s.c||!s.a)return s.bars||null;
+  if(!fc||!s.x||!s.c||!s.a||fc.modelo.w.length!==s.x.length+1)return s.bars||null;
   const F=fc.modelo,gap=clip3(((p||s.ask)/s.c-1)/(s.a/100)),x=[...s.x,gap];
   const sc=F.b+x.reduce((sum,v,j)=>sum+F.w[j]*(v-F.mu[j])/F.sd[j],0);
   return 1+F.edges.filter(e=>sc>e).length;
@@ -104,7 +116,7 @@ async function main(){
   if(av.length)$("aviso").innerHTML=av.join("<br>");
   if(!last){$("status").textContent="O robô ainda não rodou. Veja o passo a passo para ligá-lo na aba Actions do repositório.";}
   else{
-    $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}. Regra de entrada: ${last.regraEntrada||"sinal do último candle fechado"}. O robô confere o mercado de hora em hora.`;
+    $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}. Regra de entrada: ${last.regraEntrada||"sinal do último candle fechado"}. O robô confere o mercado de hora em hora.${last.spec?` Universo: as ${last.spec.topN} moedas de maior volume.`:""}${last.pausaAte&&last.pausaAte>Date.now()?` Entradas em pausa até ${when(last.pausaAte)}, por 3 stops seguidos.`:""}`;
     const pr=await Promise.all(last.signals.map(s=>price(s.sym)));
     $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const g=(s.a&&s.c)?((pr[i]||s.ask)/s.c-1)/(s.a/100):0,est=g>1.5;let k=liveBars(fc,s,pr[i]);if(est&&k)k=Math.min(k,2);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}${est?` <b class="dn">Esticado: o preço já subiu ${br(g,1)} oscilações desde o sinal, e entrar agora seria correr atrás do preço (fora do que os testes cobrem).</b>`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
   }
@@ -135,7 +147,7 @@ async function main(){
     return s;
   };
   if(sh.length){
-    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Barras 3+ (janela de 3 dias):</b> ${agg(sh.filter(t=>t.rule==="barras3-janela"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
+    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Barras 3+ (janela de 3 dias):</b> ${agg(sh.filter(t=>t.rule==="barras3-janela"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p><b>Modelo com 3 barras ou mais (os dois filtros juntos):</b> ${agg(sh.filter(t=>t.rule==="modelo-barras3"))}</p><p><b>Modelo e momentum juntos:</b> ${agg(sh.filter(t=>t.rule==="modelo-momentum"))}</p><p><b>Modelo em moedas fora do universo validado (até o top 100):</b> ${agg(sh.filter(t=>t.rule==="modelo-top100"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
   }
   if(mdl&&mdl.report){
     const r=mdl.report,t=r.teste,cap=50,m=(last&&last.model)||{validated:mdl.validated,demoted:mdl.demoted,live:mdl.live};
@@ -145,6 +157,9 @@ async function main(){
     <p>Erro de previsão (menor é melhor): ${br(r.logLoss,3)} contra ${br(r.logLossBase,3)} de quem só chuta a frequência de cada caminho, ${br((1-r.logLoss/r.logLossBase)*100,1)}% de melhora. Acerto do caminho mais provável: ${br(r.acuracia*100,1)}% contra ${br(r.acuraciaBase*100,1)}%.</p>
     <p>Teste final (parte mais recente do período, nunca usada para escolher nada). Sinais do modelo${r.limite!==null?` (chance de alta de ${br(r.limite*100,0)}% ou mais)`:""}: ${fmt(t.modelo)}. Entradas ao acaso: ${fmt(t.controle)}. Regra de momentum: ${fmt(t.momentum)}. Diferença do modelo contra o acaso: z = ${br(t.z,2)} (precisa de pelo menos 2).</p>`;
     h+=`<p class="sub">Calibração: ${r.calibracao.filter(c=>c.n>=30).map(c=>`quando previu alta de ${br(c.lo*100,0)}% a ${br(c.hi*100,0)}%, aconteceu em ${br(c.observado*100,0)}% (${c.n} casos)`).join("; ")}.</p>`;
+    if(mdl.variantes&&mdl.variantes.length){
+      h+=`<p style="margin-top:10px"><b>Variantes testadas (universo, atributos e persistência no ranking):</b></p>`+mdl.variantes.map(v=>`<div class="row"><div class="top"><span>${v.escolhida?"<b>":""}${v.nome}${v.escolhida?" (em uso)</b>":""}</span><span class="${v.validated?"up":"dn"}">${v.validated?"validada":"não validada"}</span></div><div class="sub">Sinais do modelo: ${v.modelo&&v.modelo.n?`${v.modelo.n} operações, média ${money(v.modelo.mean,cap)} ± ${money(2*v.modelo.se,cap)}, z = ${br(v.z,1)} contra o acaso`:"sem operações"}. Modelo e momentum juntos: ${v.modeloMomentum&&v.modeloMomentum.n?`${v.modeloMomentum.n} operações, média ${money(v.modeloMomentum.mean,cap)}`:"sem operações"}.</div></div>`).join("")+`<p class="sub">Só se troca de variante com z de 3 ou mais contra a base no mesmo período, porque testar muitas variantes faz alguma parecer boa por sorte.</p>`;
+    }
     const lv=m.live||mdl.live;
     if(lv&&lv.n)h+=`<p class="sub">Ao vivo: ${lv.n} previsões já conferidas com o resultado real. Erro ${br(lv.ll/lv.n,3)} contra ${br(lv.llb/lv.n,3)} do básico, e o modelo continua aprendendo a cada resultado.</p>`;
     else h+=`<p class="sub">Ao vivo: ainda sem previsões conferidas. Cada previsão leva 8 dias para ter o resultado real, e então o modelo aprende com ela.</p>`;
