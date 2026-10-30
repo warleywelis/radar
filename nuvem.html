@@ -138,16 +138,23 @@ async function main(){
     $("sum").innerHTML=`<p>${n} ${n===1?"operação fechada":"operações fechadas"}, lucro em ${w} (${br(w/n*100,0)}%). Média por operação: ${money(m,cap)}${me}. Total: R$ ${br(cap*r.reduce((a,b)=>a+b,0)/100)}.</p><p class="sub">${n<30?`Faltam ${30-n} operações para uma leitura mais confiável. `:""}O teste histórico indicou algo como R$ 0,52 (1,0%) por operação.</p>`;
   }else if(tr){$("sum").innerHTML="<p class='sub'>Os números aparecem depois da primeira operação fechada. Para uma leitura confiável são necessárias pelo menos 30 operações.</p>";}
   const sh=(shd&&shd.trades)||[];
+  const pm={};
+  await Promise.all([...new Set(sh.filter(t=>t.status==="aberta").map(t=>t.sym))].map(async s=>{pm[s]=await price(s);}));
   const agg=(list)=>{
-    const c=list.filter(t=>t.status==="fechada"),o=list.filter(t=>t.status==="aberta").length;
+    const c=list.filter(t=>t.status==="fechada"),ab=list.filter(t=>t.status==="aberta"),o=ab.length;
     let s=`${o} ${o===1?"aberta":"abertas"}, ${c.length} ${c.length===1?"fechada":"fechadas"}.`;
     if(c.length>=2){const r=c.map(t=>t.net),k=r.length,m=r.reduce((x,y)=>x+y,0)/k,sd=Math.sqrt(r.reduce((x,y)=>x+(y-m)**2,0)/(k-1)),w=r.filter(x=>x>0).length;
       s+=` Lucro em ${w} de ${k} (${br(w/k*100,0)}%). Média ${money(m,c[0].cap)}, margem de erro ± ${money(2*sd/Math.sqrt(k),c[0].cap)}.${k<30?` Faltam ${30-k} para uma leitura confiável.`:""}`;}
     else if(c.length===1)s+=` A primeira fechou com ${money(c[0].net,c[0].cap)}; uma só não diz nada.`;
+    const fl=ab.filter(t=>pm[t.sym]).map(t=>(pm[t.sym]/t.entry-1)*100-2*t.fee);
+    if(fl.length&&(c.length||fl.length)){
+      const all=[...c.map(t=>t.net),...fl],cap=(c[0]||ab[0]).cap;
+      s+=` Contando também as abertas pelo preço de agora (sem stop, meta ou prazo aplicados): média ${money(all.reduce((x,y)=>x+y,0)/all.length,cap)} em ${all.length} operações.`;
+    }
     return s;
   };
   if(sh.length){
-    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Barras 3+ (janela de 3 dias):</b> ${agg(sh.filter(t=>t.rule==="barras3-janela"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p><b>Modelo com 3 barras ou mais (os dois filtros juntos):</b> ${agg(sh.filter(t=>t.rule==="modelo-barras3"))}</p><p><b>Modelo e momentum juntos:</b> ${agg(sh.filter(t=>t.rule==="modelo-momentum"))}</p><p><b>Modelo em moedas fora do universo validado (até o top 100):</b> ${agg(sh.filter(t=>t.rule==="modelo-top100"))}</p><p class="sub">Estas operações registram o resultado de cada sinal das duas regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
+    $("shadow").innerHTML=`<p><b>Regra de momentum:</b> ${agg(sh.filter(t=>(t.rule||"momentum")==="momentum"))}</p><p><b>Momentum sem meta (só stop de 2 oscilações e saída no prazo de 7 dias):</b> ${agg(sh.filter(t=>t.rule==="momentum-sem-meta"))}</p><p><b>Barras 3+ (janela de 3 dias):</b> ${agg(sh.filter(t=>t.rule==="barras3-janela"))}</p><p><b>Modelo de previsão:</b> ${agg(sh.filter(t=>t.rule==="modelo"))}</p><p><b>Modelo com 3 barras ou mais (os dois filtros juntos):</b> ${agg(sh.filter(t=>t.rule==="modelo-barras3"))}</p><p><b>Modelo e momentum juntos:</b> ${agg(sh.filter(t=>t.rule==="modelo-momentum"))}</p><p><b>Modelo em moedas fora do universo validado (até o top 100):</b> ${agg(sh.filter(t=>t.rule==="modelo-top100"))}</p><p class="sub">Atenção: nas regras sem meta, quem vai bem fica aberto até o prazo de 7 dias e quem vai mal bate o stop cedo, então as fechadas mostram só as perdas. Por isso a média contando as abertas é a leitura mais justa. Estas operações registram o resultado de cada sinal das regras, mesmo quando o robô já está com uma operação aberta. Servem para juntar amostra mais rápido e comparar as regras, e não representam operações reais.</p>`;
   }
   if(mdl&&mdl.report){
     const r=mdl.report,t=r.teste,cap=50,m=(last&&last.model)||{validated:mdl.validated,demoted:mdl.demoted,live:mdl.live};
