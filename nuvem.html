@@ -38,10 +38,14 @@ a{color:var(--ac)}
 <div class="panel" id="model"><p class="sub">Ainda não treinado. Rode o fluxo "treino" na aba Ações do GitHub.</p></div>
 <h2>Força do sinal e a estratégia de fechar no lucro e reabrir</h2>
 <div class="panel" id="forca"><p class="sub">Ainda não calculada. Rode o fluxo "forca" na aba Ações do GitHub.</p></div>
+<h2>Detector de véspera (sinal antes da vela forte)</h2>
+<div class="panel" id="vespera"><p class="sub">Ainda não calculado. Rode o fluxo "pesquisa" na aba Ações do GitHub.</p></div>
 <h2>Resumo</h2>
 <div class="panel" id="sum"><p class="sub">Sem dados ainda.</p></div>
 <h2>Operações-sombra (todos os sinais)</h2>
 <div class="panel" id="shadow"><p class="sub">Sem dados ainda.</p></div>
+<h2>Conferência: robô contra o teste histórico</h2>
+<div class="panel" id="conf"><p class="sub">Ainda não calculada. Rode o fluxo "pesquisa" na aba Ações do GitHub.</p></div>
 <h2>Histórico</h2>
 <div class="panel"><ul id="hist"><li class="sub">Ainda sem operações fechadas.</li></ul></div>
 <h2>Teste de regras de saída</h2>
@@ -106,7 +110,7 @@ function fmtStats(s,cap){
   return `${s.n} operações, lucro em ${br(s.win,0)}%. Média ${money(s.mean,cap)}, margem de erro ± ${money(s.margin,cap)}. Primeira metade ${f(s.half1)}, segunda metade ${f(s.half2)}.`;
 }
 async function main(){
-  const [tr,last,sv,shd,mdl,sd,fc,pq]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json"),raw("pesquisa.json")]);
+  const [tr,last,sv,shd,mdl,sd,fc,pq,vp,cf]=await Promise.all([raw("trades.json"),raw("last-run.json"),raw("survivorship.json"),raw("shadow.json"),raw("model.json"),raw("saidas.json"),raw("forca.json"),raw("pesquisa.json"),raw("vespera.json"),raw("conferencia.json")]);
   const av=[];
   const velho=[mdl&&mdl.report&&!mdl.report.minAtr?"modelo":null,sd&&!sd.minAtr?"regras de saída":null,fc&&!fc.minAtr?"força do sinal":null].filter(Boolean);
   if(velho.length)av.push(`Atenção: ${velho.join(", ")} ${velho.length>1?"foram gerados":"foi gerado"} com a versão antiga, sem o filtro de moedas atreladas ao dólar. Envie o ml.js e o pesquisa.js novos e rode o fluxo "pesquisa".`);
@@ -118,7 +122,7 @@ async function main(){
   else{
     $("status").textContent=`Última execução: ${when(last.time)}. ${last.analyzed} moedas analisadas, ${last.signals.length} com sinal${last.entered?", entrou em "+last.entered.replace("USDT","/USDT"):""}. Regra de entrada: ${last.regraEntrada||"sinal do último candle fechado"}. O robô confere o mercado de hora em hora.${last.spec?` Universo: as ${last.spec.topN} moedas de maior volume.`:""}${last.pausaAte&&last.pausaAte>Date.now()?` Entradas em pausa até ${when(last.pausaAte)}, por 3 stops seguidos.`:""}`;
     const pr=await Promise.all(last.signals.map(s=>price(s.sym)));
-    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const g=(s.a&&s.c)?((pr[i]||s.ask)/s.c-1)/(s.a/100):0,est=g>1.5;let k=liveBars(fc,s,pr[i]);if(est&&k)k=Math.min(k,2);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}${est?` <b class="dn">Esticado: o preço já subiu ${br(g,1)} oscilações desde o sinal, e entrar agora seria correr atrás do preço (fora do que os testes cobrem).</b>`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
+    $("sig").innerHTML=last.signals.length?last.signals.map((s,i)=>{const g=(s.a&&s.c)?((pr[i]||s.ask)/s.c-1)/(s.a/100):0,est=g>1.5;let k=liveBars(fc,s,pr[i]);if(est&&k)k=Math.min(k,2);return `<li><div class="top"><b>${s.base}/USDT</b><span>${k?barsHtml(k)+`<span class="${k>=3?"up":"mut"}">força ${forcaTxt(k)} (${k} de 5)</span>`:`<span class="up">sinal</span>`}</span></div><div class="sub">${s.age?`Sinal de ${s.age} ${s.age===1?"dia":"dias"} atrás. `:"Sinal do último candle fechado. "}Volume ${br(s.vr,1)} vezes a média. Stop sugerido: perda de ${money(s.stopPct,last.params.cap)}.${k&&pr[i]?` Barras recalculadas com o preço de agora (${Number(pr[i].toPrecision(5))} USDT).`:""}${s.motivo&&!est?` <i>Por que o robô ${s.motivo.startsWith("o robô entrou")?"entrou":"não entra"}: ${s.motivo}.</i>`:""}${est?` <b class="dn">Esticado: o preço já subiu ${br(g,1)} oscilações desde o sinal, e entrar agora seria correr atrás do preço (fora do que os testes cobrem).</b>`:""}</div>${chartBtn(s.sym)}</li>`;}).join(""):"<li class='sub'>Nenhuma moeda com sinal na última execução. Isso é normal.</li>";
   }
   const trades=(tr&&tr.trades)||[],op=trades.filter(t=>t.status==="aberta"),cl=trades.filter(t=>t.status==="fechada");
   if(op.length){
@@ -210,6 +214,23 @@ async function main(){
       h+=`<p class="sub">"Passa" quer dizer: pelo menos 30 operações, média por operação positiva mesmo descontando a margem de erro, e carteira de R$ 50 no azul depois da conversão. No teste, bater a meta fecha a operação e a carteira só reabre no dia seguinte, o que é um pouco pessimista. Na vida real, a regra exige acompanhar o preço várias vezes por dia, e uma ordem de venda programada na meta (ordem limite ou OCO) é o que captura os picos.</p>`;
     }
     $("forca").innerHTML=h;
+  }
+  if(cf&&cf.resumo&&Object.keys(cf.resumo).length){
+    const cap=50;
+    let h=`<p class="sub">Os sinais de momentum que o robô já fechou, refeitos pelas regras do teste histórico (entrada na abertura do dia seguinte, mesma meta e stop). Gerado em ${when(cf.generated)}. Serve para separar se a diferença vem da execução do robô ou dos próprios sinais e do mercado.</p>`;
+    for(const [k,g] of Object.entries(cf.resumo)){
+      const d=g.mediaRobo-g.mediaTeste;
+      h+=`<div class="row"><b>${k==="momentum-sem-meta"?"Momentum sem meta":"Momentum com meta de 10%"}</b><div class="sub">${g.n} sinais. O robô registrou, em média, ${money(g.mediaRobo,cap)}; o teste histórico daria ${money(g.mediaTeste,cap)}. O preço de entrada do robô ficou, em média, ${br(g.mediaDifEntrada,2)}% em relação ao do teste.</div><div class="sub">${Math.abs(d)<1?"O robô e o teste concordam: a diferença para o histórico vem dos sinais e do mercado, e não da execução.":d<0?`O robô fez ${br(Math.abs(d),1)} pontos percentuais pior que o teste: a execução (hora e preço de entrada) está custando resultado.`:`O robô fez ${br(d,1)} pontos percentuais melhor que o teste.`}</div></div>`;
+    }
+    $("conf").innerHTML=h;
+  }
+  if(vp&&vp.fatias){
+    const cap=50,e=vp.economia,f5=vp.fatias[1];
+    let h=`<p class="sub">${vp.definicao} Gerado em ${when(vp.generated)}, com ${vp.foraDaAmostra} previsões fora da amostra.</p><p>Em ${br(vp.taxaBase*100,1)}% dos dias, a vela seguinte é uma explosão (e em ${br(vp.meta10BaseNoDiaSeguinte*100,1)}% o preço toca +10% logo no dia seguinte).</p>`;
+    h+=vp.fatias.map(x=>`<div class="row"><div class="top"><b>As ${x.fatia} de maior nota do detector</b><span class="sub">${x.n} casos</span></div><div class="sub">${br(x.taxa*100,1)}% foram explosão (± ${br(x.margem*100,1)}), ou seja, ${br(x.lift,1)} vezes a taxa normal (no mínimo ${br(x.liftInferior,1)} vezes). Tocaram +10% no dia seguinte: ${br(x.meta10NoDiaSeguinte*100,1)}%.</div></div>`).join("");
+    h+=`<p style="margin-top:10px">Entrando nas 5% mais bem avaliadas (metade mais recente do período, meta 10% e stop de 2 oscilações): ${e.top5.n} operações, média ${money(e.top5.mean,cap)} ± ${money(2*e.top5.se,cap)}, contra ${money(e.controle.mean,cap)} das entradas ao acaso. z = ${br(e.z,1)} (o mínimo é 3).</p>`;
+    h+=`<p><b>${vp.passa?"Passa no critério (aumento de pelo menos 2 vezes, com limite inferior de 1,5 vez, e z de 3 ou mais).":"Não passa no critério: não dá para afirmar que o detector antecipa a vela forte."}</b> ${vp.passa?"Mesmo assim, só entra no robô depois de operações-sombra confirmarem.":"A vela de alta forte tende a aparecer sem aviso confiável, e o que sobra é a regra atual, que entra depois do sinal."}</p>`;
+    $("vespera").innerHTML=h;
   }
   if(sv){
     const cap=50,g=sv.groups,a=g.A_todas_inclusive_as_que_sairam,b=g.B_so_as_que_negociam_hoje;

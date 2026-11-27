@@ -230,10 +230,24 @@ function newTrade(s, now, source, rule) {
   save("data/predictions.json", PR);
   if (M) save("data/model.json", M);
   const top = scan.filter(r => r.p).sort((a, b) => b.p[0] - a.p[0]).slice(0, 8).map(r => ({ sym: r.sym, base: r.base, p: r.p.map(r4) }));
+  const rowBy = new Map(scan.map(r => [r.sym, r]));
+  const aberta = S.trades.some(t => t.status === "aberta");
+  const motivo = s => { // por que o robô entrou ou não neste sinal (a regra principal é o modelo, e as barras só informam)
+    if (s.sym === entered) return "o robô entrou neste sinal";
+    if (!useModel) return null;
+    const r = rowBy.get(s.sym);
+    if (!r || !r.p) return "o modelo ainda não tem previsão para esta moeda";
+    if (r.stretched) return "o preço já subiu demais desde o sinal (esticado), e o robô não corre atrás do preço";
+    if (M.thr !== null && r.p[0] < M.thr) return `o modelo dá ${Math.round(r.p[0] * 100)}% de chance de alta, abaixo do limite de ${Math.round(M.thr * 100)}%, e a regra de entrada é o modelo (as barras só informam)`;
+    if (!r.inUni) return "a moeda está fora do universo validado";
+    if (pausaAte) return "entradas em pausa por 3 stops seguidos";
+    if (aberta) return "já há uma operação aberta";
+    return null;
+  };
   save("data/last-run.json", {
     time: Date.now(), versoes: { bot: "2026-10-24", ml: ML.VERSAO || null, minAtr: ML.MIN_ATR || null }, analyzed: cache.size, entered, rule: mainRule, spec: SPEC, pausaAte,
     regraEntrada: useModel ? "previsão do modelo" : useBars ? "3 barras ou mais, em até 3 dias do sinal" : "sinal do último candle fechado (o filtro de barras ainda não foi comprovado)",
-    signals: sigs.map(s => ({ sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, gap: s.gap === undefined ? undefined : r4(s.gap), stretched: s.stretched, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
+    signals: sigs.map(s => ({ motivo: motivo(s), sym: s.sym, base: s.base, vr: s.vr, stopPct: s.stopPct, ask: s.ask, bars: s.bars, age: s.age, gap: s.gap === undefined ? undefined : r4(s.gap), stretched: s.stretched, x: s.x && s.x.map(r4), c: s.c, a: s.a && r4(s.a) })),
     modelSignals: modelSignals.map(s => ({ sym: s.sym, base: s.base, p: s.p.map(r4), stopPct: s.stopPct })),
     modelTop: top,
     model: M ? { validated: M.validated, demoted: M.demoted, thr: M.thr, live: M.live, trainedAt: M.trainedAt, learned } : null,

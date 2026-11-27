@@ -51,7 +51,10 @@ async function treino(series) {
         if (V.minDias) { let ok = true; for (let d = 1; d <= V.minDias; d++) { const r = rk.get(cs[i - d].t); if (!r || r > V.topN) { ok = false; break; } } if (!ok) continue; }
         const f = ML.features(cs, i, bctx, V.extra);
         if (!f) continue;
-        rows.push({ sym, t: cs[i].t, x: f.x, y: ML.label(cs, i, f.a), net: ML.tradeNet(cs, i, f.a, P), mom: f.x[4] >= 0 && f.x[5] >= Math.log(2) });
+        const net = ML.tradeNet(cs, i, f.a, P);
+        // rótulo "trade": o que a operação de fato rende (meta, prazo ou stop), em vez de "subir 1 oscilação", que favorece moedas calmas
+        const y = V.trade ? (net >= 5 ? 0 : net <= -4 ? 2 : 1) : ML.label(cs, i, f.a);
+        rows.push({ sym, t: cs[i].t, x: f.x, y, net, mom: f.x[4] >= 0 && f.x[5] >= Math.log(2) });
       }
     }
     rows.sort((a, b) => a.t - b.t);
@@ -92,7 +95,7 @@ async function treino(series) {
     const finalM = ML.newModel(nf), pr = [0, 0, 0]; for (const r of rows) pr[r.y]++;
     ML.fit(finalM, rows, { epochs: 150, restandardize: true });
     return {
-      id: V.id, nome: V.nome, spec: { topN: V.topN, minDias: V.minDias || 0, extra: !!V.extra }, exemplos: rows.length, foraDaAmostra: oos.length,
+      id: V.id, nome: V.nome, spec: { topN: V.topN, minDias: V.minDias || 0, extra: !!V.extra, trade: !!V.trade }, exemplos: rows.length, foraDaAmostra: oos.length,
       logLoss: ML.round(ll), logLossBase: ML.round(llb), acuracia: ML.round(mean(oos.map(am))), acuraciaBase: ML.round(mean(oos.map(ab))), calibracao: bins, limite: thr,
       teste: { modelo: model, controle: control, momentum, modeloMomentum: mm, z: ML.round(z, 2), zModeloMomentum: ML.round(zOf(mm, control), 2) },
       periodoTeste: { de: oos[0].t, ate: oos[oos.length - 1].t, cortes: tSplit }, validated, packed: ML.pack(finalM), priors: pr.map(v => ML.round(v / rows.length))
@@ -106,7 +109,8 @@ async function treino(series) {
     { id: "base40", nome: "Top 40, atributos básicos", topN: 40, minDias: 0, extra: false },
     { id: "base80", nome: "Top 80, atributos básicos", topN: 80, minDias: 0, extra: false },
     { id: "base100", nome: "Top 100, atributos básicos", topN: 100, minDias: 0, extra: false },
-    { id: "persist7", nome: "Top 60, só moedas no ranking há 7 dias ou mais", topN: 60, minDias: 7, extra: false }
+    { id: "persist7", nome: "Top 60, só moedas no ranking há 7 dias ou mais", topN: 60, minDias: 7, extra: false },
+    { id: "trade60", nome: "Top 60, prevendo o resultado da operação (meta antes do stop) em vez de subir 1 oscilação", topN: 60, minDias: 0, extra: false, trade: true }
   ];
   const res = [];
   for (const V of variantes) {
@@ -504,12 +508,122 @@ async function forca(series) {
 
 }
 
+// ===================== vespera =====================
+// Testa a ideia "dar o sinal no candle ANTERIOR a um candle que sobe muito": prevê, no fechamento do dia i, se o dia i+1 será uma vela de alta forte.
+async function vespera(series) {
+  const DAY = 864e5, H = ML.H;
+  const P = { tgt: 10, k: 2, maxl: 15, fee: 0.075, slip: 0.1, volWin: 30, minTrainMonths: 24, topN: 60 };
+  const mkey = t => { const d = new Date(t); return d.getUTCFullYear() * 12 + d.getUTCMonth(); };
+  const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+  const clipv = (v, a) => Math.max(-a, Math.min(a, v));
+  const btc = series["BTCUSDT"];
+  if (!btc) throw new Error("BTCUSDT não encontrado");
+  const bctx = ML.btcContext(btc);
+  // universo diário: as 60 moedas de maior volume médio de 30 dias
+  const inTop = new Map(Object.keys(series).map(s => [s, new Set()]));
+  {
+    const byDay = new Map();
+    for (const [s, cs] of Object.entries(series)) {
+      let q = 0;
+      for (let i = 0; i < cs.length; i++) { q += cs[i].q; if (i >= P.volWin) { q -= cs[i - P.volWin].q; if (!byDay.has(cs[i].t)) byDay.set(cs[i].t, []); byDay.get(cs[i].t).push([s, q / P.volWin]); } }
+    }
+    for (const [t, arr] of byDay) { arr.sort((a, b) => b[1] - a[1]); for (const [s] of arr.slice(0, P.topN)) inTop.get(s).add(t); }
+  }
+  const st = a => { const n = a.length; if (n < 2) return { n, mean: n ? a[0] : 0, se: 0, win: 0 }; const m = mean(a), sd = Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (n - 1)); return { n, mean: m, se: sd / Math.sqrt(n), win: a.filter(x => x > 0).length / n * 100 }; };
+  const pick = (list, ok) => { const last = {}, out = []; for (const r of list) { if (!ok(r)) continue; if (last[r.sym] !== undefined && r.t < last[r.sym] + (H + 1) * DAY) continue; last[r.sym] = r.t; out.push(r.net); } return out; };
+
+  const rows = [];
+  for (const [sym, cs] of Object.entries(series)) {
+    const set = inTop.get(sym);
+    for (let i = 56; i < cs.length - H - 1; i++) {
+      if (!set.has(cs[i].t)) continue;
+      const f = ML.features(cs, i, bctx, true);
+      if (!f) continue;
+      const a5 = ML.atrPctAt(cs, i, 5), a20 = ML.atrPctAt(cs, i, 20);
+      if (!a5 || !a20) continue;
+      let hi = 0, lo = Infinity, v3 = 0, v20 = 0;
+      for (let j = i - 9; j <= i; j++) { if (cs[j].h > hi) hi = cs[j].h; if (cs[j].l < lo) lo = cs[j].l; }
+      for (let j = i - 2; j <= i; j++) v3 += cs[j].v;
+      for (let j = i - 19; j <= i; j++) v20 += cs[j].v;
+      // atributos de "mola comprimida": volatilidade curta contra longa, amplitude dos últimos 10 dias e volume recente contra o normal
+      const x = [...f.x, clipv(Math.log(a5 / a20), 2), clipv((hi - lo) / cs[i].c / (f.a / 100), 15) / 5, v20 > 0 ? clipv(Math.log((v3 / 3) / (v20 / 20)), 3) : 0];
+      const nx = cs[i + 1], day = (nx.c / nx.o - 1) * 100;
+      rows.push({ sym, t: cs[i].t, x, y: day >= Math.max(5, 1.5 * f.a) ? 0 : 1, hit10: (nx.h / nx.o - 1) * 100 >= 10, net: ML.tradeNet(cs, i, f.a, P) });
+    }
+  }
+  rows.sort((a, b) => a.t - b.t);
+  if (rows.length < 5000) throw new Error("exemplos insuficientes");
+  const months = [...new Set(rows.map(r => mkey(r.t)))].sort((a, b) => a - b);
+  let M = ML.newModel(18), started = false;
+  const oos = [];
+  for (const m of months.filter(m => m >= months[0] + P.minTrainMonths)) {
+    const startT = Date.UTC(Math.floor(m / 12), m % 12, 1);
+    const train = rows.filter(r => r.t + (H + 1) * DAY < startT), test = rows.filter(r => mkey(r.t) === m);
+    if (train.length < 3000 || !test.length) continue;
+    ML.fit(M, train, { epochs: started ? 40 : 120, restandardize: !started });
+    started = true;
+    for (const r of test) oos.push({ sym: r.sym, t: r.t, y: r.y, hit10: r.hit10, net: r.net, p: ML.predict(M, r.x)[0] });
+  }
+  if (oos.length < 2000) throw new Error("poucos exemplos fora da amostra");
+  const base = mean(oos.map(r => r.y === 0 ? 1 : 0)), baseHit = mean(oos.map(r => r.hit10 ? 1 : 0));
+  const byP = oos.slice().sort((a, b) => b.p - a.p);
+  const fatias = [0.01, 0.05, 0.1].map(q => {
+    const g = byP.slice(0, Math.max(30, Math.floor(oos.length * q))), taxa = mean(g.map(r => r.y === 0 ? 1 : 0)), se = Math.sqrt(taxa * (1 - taxa) / g.length);
+    return { fatia: Math.round(q * 100) + "%", n: g.length, taxa, margem: 2 * se, lift: taxa / base, liftInferior: Math.max(0, taxa - 2 * se) / base, meta10NoDiaSeguinte: mean(g.map(r => r.hit10 ? 1 : 0)) };
+  });
+  const cut = byP[Math.floor(oos.length * 0.05)].p, tSplit = oos[Math.floor(oos.length * 0.5)].t; // economia: só a metade mais recente do período
+  const hold = oos.filter(r => r.t >= tSplit), ctl = st(pick(hold, () => true)), top = st(pick(hold, r => r.p >= cut));
+  const z = top.n >= 2 && ctl.n >= 2 ? (top.mean - ctl.mean) / Math.sqrt(top.se ** 2 + ctl.se ** 2) : 0;
+  const f5 = fatias[1], passa = f5.liftInferior >= 1.5 && f5.lift >= 2 && z >= 3 && top.mean > 0;
+  const out = {
+    generated: Date.now(), minAtr: ML.MIN_ATR || null, foraDaAmostra: oos.length, taxaBase: base, meta10BaseNoDiaSeguinte: baseHit, fatias,
+    economia: { top5: top, controle: ctl, z: ML.round(z, 2) }, passa,
+    definicao: "Explosão = o dia seguinte fecha pelo menos 1,5 oscilação diária (e pelo menos 5%) acima da abertura. O modelo olha só dados até o fechamento do dia do sinal."
+  };
+  fs.mkdirSync("data", { recursive: true });
+  fs.writeFileSync("data/vespera.json", JSON.stringify(out));
+  console.log("Taxa base de explosão:", (base * 100).toFixed(1) + "%", "| top 5%:", (f5.taxa * 100).toFixed(1) + "% (lift " + f5.lift.toFixed(2) + ")", "| economia z =", z.toFixed(2), "| passa:", passa);
+}
+
+
+// ===================== conferencia =====================
+// Refaz, pelas regras do teste histórico (entrada na abertura do dia seguinte), os sinais de momentum que o robô já fechou, e compara com o que o robô registrou.
+async function conferencia(series) {
+  const API = "https://data-api.binance.vision";
+  let SH;
+  try { SH = JSON.parse(fs.readFileSync("data/shadow.json", "utf8")); } catch (e) { throw new Error("sem data/shadow.json ainda"); }
+  const P = { tgt: 10, k: 2, maxl: 15, fee: 0.075, slip: 0.1 };
+  const get = async p => { for (let i = 0; i < 3; i++) { try { const r = await fetch(API + p); if (!r.ok) throw new Error("HTTP " + r.status); return await r.json(); } catch (e) { if (i === 2) throw e; await new Promise(r => setTimeout(r, 1000)); } } };
+  const closed = SH.trades.filter(t => t.status === "fechada" && t.sigT && ["momentum", "momentum-sem-meta", undefined].includes(t.rule));
+  const cache = new Map(), rows = [];
+  for (const t of closed) {
+    try {
+      if (!cache.has(t.sym)) cache.set(t.sym, (await get(`/api/v3/klines?symbol=${t.sym}&interval=1d&limit=200`)).map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5], q: +c[7] })));
+      const cs = cache.get(t.sym), i = cs.findIndex(c => c.t === t.sigT);
+      if (i < 20 || i + ML.H >= cs.length - 1) continue;
+      const a = ML.atrPctAt(cs, i);
+      if (!a) continue;
+      const semMeta = t.rule === "momentum-sem-meta", entTeste = cs[i + 1].o * (1 + P.slip / 100);
+      rows.push({ moeda: t.base, regra: semMeta ? "momentum-sem-meta" : "momentum", entradaRobo: t.entry, entradaTeste: entTeste, difEntradaPct: (t.entry / entTeste - 1) * 100, netRobo: t.net, netTeste: ML.tradeNet(cs, i, a, semMeta ? { ...P, tgt: 1e9 } : P), motivoRobo: t.why, data: t.time });
+    } catch (e) { console.log("conferência falhou em " + t.sym + ": " + e.message); }
+  }
+  const resumo = {};
+  for (const r of rows) { const g = resumo[r.regra] = resumo[r.regra] || { n: 0, robo: 0, teste: 0, dif: 0 }; g.n++; g.robo += r.netRobo; g.teste += r.netTeste; g.dif += r.difEntradaPct; }
+  for (const g of Object.values(resumo)) { g.mediaRobo = g.robo / g.n; g.mediaTeste = g.teste / g.n; g.mediaDifEntrada = g.dif / g.n; delete g.robo; delete g.teste; delete g.dif; }
+  fs.mkdirSync("data", { recursive: true });
+  fs.writeFileSync("data/conferencia.json", JSON.stringify({ generated: Date.now(), resumo, linhas: rows.slice(-40) }));
+  console.log("Conferência:", JSON.stringify(resumo));
+}
+
+
 (async () => {
   if (!ML.MIN_ATR) throw new Error("ml.js desatualizado: envie o ml.js novo ao repositório antes de rodar a pesquisa");
-  console.log("Baixando histórico (uma vez só)...");
-  const series = await loadAll();
+  const only = process.env.SO ? process.env.SO.split(",") : null; // SO=conferencia roda só uma etapa (para testes)
+  const needsData = !only || only.some(n => n !== "conferencia");
+  if (needsData) console.log("Baixando histórico (uma vez só)...");
+  const series = needsData ? await loadAll() : {};
   const res = { generated: Date.now(), versoes: { ml: ML.VERSAO || null, minAtr: ML.MIN_ATR }, ok: {}, erros: {} };
-  for (const [nome, fn] of [["treino", treino], ["saidas", saidas], ["forca", forca]]) {
+  for (const [nome, fn] of [["treino", treino], ["saidas", saidas], ["forca", forca], ["vespera", vespera], ["conferencia", conferencia]].filter(([n]) => !only || only.includes(n))) {
     console.log("\n=== " + nome + " ===");
     try { await fn(series); res.ok[nome] = true; }
     catch (e) { console.error("Falhou em " + nome + ": " + e.message); res.ok[nome] = false; res.erros[nome] = e.message; process.exitCode = 1; }
